@@ -16,7 +16,7 @@ export async function analyzeMarket(symbol: string): Promise<StrategyResult> {
         return { action: 'HOLD', symbol, reason: 'Not enough data', price: 0 };
     }
 
-    const closes = candles.map(c => c[4]);
+    const closes = candles.map(c => c[4]).filter((c): c is number => c !== undefined);
     const currentPrice = closes[closes.length - 1];
 
     // Calculate Indicators
