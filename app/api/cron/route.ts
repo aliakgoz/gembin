@@ -1,7 +1,9 @@
 import { NextResponse } from 'next/server';
-import { binance, getBalance } from '@/lib/binance';
+import { binance, getBalance, calculateTotalBalanceUsdt } from '@/lib/binance';
 import { analyzeMarket } from '@/lib/strategy';
 import { db } from '@/lib/db';
+import { autoTuneStrategy } from '@/lib/autoTune';
+import { getStrategyConfig } from '@/lib/strategyConfig';
 
 export const dynamic = 'force-dynamic'; // static by default, unless reading the request
 
@@ -22,26 +24,26 @@ export async function GET(request: Request) {
             return NextResponse.json({ message: 'Bot is disabled' });
         }
 
-        // 2. Get Active Pairs
-        // Default to top pairs if not set
-        const pairs = ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT'];
+        // 2. Load strategy config (pairs, risk, thresholds)
+        const config = await getStrategyConfig();
+        const pairs = config.pairs;
 
         const results = [];
 
         // 3. Analyze & Execute
         for (const symbol of pairs) {
             try {
-                const analysis = await analyzeMarket(symbol);
+                const analysis = await analyzeMarket(symbol, config);
 
                 if (analysis.action === 'BUY') {
                     // Check Balance
                     const balance = await getBalance();
-                    const usdtBalance = balance['USDT']?.free || 0;
+                    const usdtBalance = Number((balance as any)?.total?.USDT ?? (balance as any)?.free?.USDT ?? 0);
 
-                    // Use 10% of available USDT per trade (Simple Risk Management)
-                    const tradeAmountUSDT = usdtBalance * 0.1;
+                    // Risk Management from config
+                    const tradeAmountUSDT = usdtBalance * config.allocationPerTrade;
 
-                    if (tradeAmountUSDT > 10) { // Min trade size usually $10
+                    if (tradeAmountUSDT > config.minTradeUsd) { // Min trade size guard
                         const amount = tradeAmountUSDT / analysis.price;
                         // Execute Market Buy
                         // const order = await binance.createMarketBuyOrder(symbol, amount);
@@ -61,9 +63,9 @@ export async function GET(request: Request) {
                     // Check Asset Balance
                     const baseAsset = symbol.split('/')[0];
                     const balance = await getBalance();
-                    const assetBalance = balance[baseAsset]?.free || 0;
+                    const assetBalance = Number((balance as any)?.total?.[baseAsset] ?? (balance as any)?.free?.[baseAsset] ?? 0);
 
-                    if (assetBalance * analysis.price > 10) {
+                    if (assetBalance * analysis.price > config.minTradeUsd) {
                         // Execute Market Sell (Sell all)
                         // const order = await binance.createMarketSellOrder(symbol, assetBalance);
                         const order = { id: 'paper_' + Date.now(), symbol, side: 'sell', amount: assetBalance, price: analysis.price, cost: assetBalance * analysis.price, status: 'closed' };
@@ -86,14 +88,14 @@ export async function GET(request: Request) {
 
         // 4. Take Snapshot
         const totalBalance = await getBalance();
-        // Calculate total USDT value (approx)
-        let totalUSDT = totalBalance['USDT']?.total || 0;
-        // Add other assets value (simplified)
-        // In production, fetch prices for all assets. For now, just USDT.
+        const { totalUsdt, assets } = await calculateTotalBalanceUsdt(totalBalance);
 
-        await db.query("INSERT INTO portfolio_snapshots (total_balance_usdt, positions) VALUES ($1, $2)", [totalUSDT, JSON.stringify(totalBalance)]);
+        await db.query("INSERT INTO portfolio_snapshots (total_balance_usdt, positions) VALUES ($1, $2)", [totalUsdt, JSON.stringify(assets)]);
 
-        return NextResponse.json({ success: true, results });
+        // 5. Auto-tune via ChatGPT using latest metrics
+        const tuneResult = await autoTuneStrategy();
+
+        return NextResponse.json({ success: true, results, tuneResult });
 
     } catch (error: any) {
         console.error('Cron failed:', error);

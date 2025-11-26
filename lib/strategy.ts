@@ -1,5 +1,6 @@
 import { binance } from './binance';
 import { RSI, MACD, BollingerBands } from 'technicalindicators';
+import { getStrategyConfig, StrategyConfig } from './strategyConfig';
 
 export interface StrategyResult {
     action: 'BUY' | 'SELL' | 'HOLD';
@@ -8,9 +9,12 @@ export interface StrategyResult {
     price: number;
 }
 
-export async function analyzeMarket(symbol: string): Promise<StrategyResult> {
-    // Fetch recent candles (1h interval, 100 limit)
-    const candles = await binance.fetchOHLCV(symbol, '1h', undefined, 100);
+export async function analyzeMarket(symbol: string, config?: StrategyConfig): Promise<StrategyResult> {
+    // Fetch config once per analysis if not provided by caller (cron batches reuse)
+    const cfg = config || await getStrategyConfig();
+
+    // Fetch recent candles (1h interval)
+    const candles = await binance.fetchOHLCV(symbol, '1h', undefined, cfg.lookback);
 
     if (candles.length < 50) {
         return { action: 'HOLD', symbol, reason: 'Not enough data', price: 0 };
@@ -35,24 +39,20 @@ export async function analyzeMarket(symbol: string): Promise<StrategyResult> {
 
     const bbValues = BollingerBands.calculate({
         values: closes,
-        period: 20,
-        stdDev: 2,
+        period: cfg.bbPeriod,
+        stdDev: cfg.bbStdDev,
     });
     const currentBB = bbValues[bbValues.length - 1];
 
-    // Strategy Logic: Dynamic Trend Follower
-    // BUY: RSI < 30 (Oversold) AND MACD Histogram > 0 (Momentum up) AND Price < Lower Band (Mean Reversion)
-    // SELL: RSI > 70 (Overbought) OR Price > Upper Band
-
-    // Simplified for robustness:
-    // Buy if RSI is low and price is bouncing off lower band
-    if (currentRSI < 35 && currentPrice <= currentBB.lower * 1.01) {
-        return { action: 'BUY', symbol, reason: `RSI Oversold (${currentRSI.toFixed(2)}) + Lower BB`, price: currentPrice };
+    // Config-driven logic:
+    // Buy if RSI is below configured buy threshold and price near/below lower band
+    if (currentRSI < cfg.rsiBuy && currentPrice <= currentBB.lower * 1.01) {
+        return { action: 'BUY', symbol, reason: `RSI < ${cfg.rsiBuy} (${currentRSI.toFixed(2)}) + Lower BB`, price: currentPrice };
     }
 
-    // Sell if RSI is high
-    if (currentRSI > 70 || currentPrice >= currentBB.upper) {
-        return { action: 'SELL', symbol, reason: `RSI Overbought (${currentRSI.toFixed(2)}) or Upper BB`, price: currentPrice };
+    // Sell if RSI is above configured sell threshold or price touches upper band
+    if (currentRSI > cfg.rsiSell || currentPrice >= currentBB.upper) {
+        return { action: 'SELL', symbol, reason: `RSI > ${cfg.rsiSell} (${currentRSI.toFixed(2)}) or Upper BB`, price: currentPrice };
     }
 
     return { action: 'HOLD', symbol, reason: 'No signal', price: currentPrice };

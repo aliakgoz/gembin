@@ -3,6 +3,7 @@ import { Overview } from "@/components/dashboard/overview";
 import { db } from "@/lib/db";
 import { getBalance, calculateTotalBalanceUsdt } from "@/lib/binance";
 import { DollarSign, Activity, CreditCard, TrendingUp, CheckCircle2, XCircle } from "lucide-react";
+import { getStrategyConfig } from "@/lib/strategyConfig";
 
 export const dynamic = 'force-dynamic';
 
@@ -56,15 +57,11 @@ async function getDashboardData() {
     const totalClosed = parseInt(winRateRes.rows[0].total || '0');
     const winRate = totalClosed > 0 ? Math.round((wins / totalClosed) * 100) : 0;
 
-    // Active strategy + pair coverage (fallbacks mirror cron defaults)
-    const strategyRes = await db.query("SELECT strategy FROM trades WHERE strategy IS NOT NULL AND strategy <> '' ORDER BY timestamp DESC LIMIT 1");
-    const defaultStrategy = 'DynamicTrend';
-    const activeStrategy = strategyRes.rows[0]?.strategy || defaultStrategy;
+    const strategyConfig = await getStrategyConfig();
 
     const pairCountRes = await db.query("SELECT COUNT(DISTINCT symbol) as count FROM trades WHERE timestamp > NOW() - INTERVAL '30 days'");
-    const defaultPairs = ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT'];
     const tradedPairCount = parseInt(pairCountRes.rows[0]?.count || '0');
-    const activePairs = tradedPairCount > 0 ? tradedPairCount : defaultPairs.length;
+    const activePairs = tradedPairCount > 0 ? tradedPairCount : strategyConfig.pairs.length;
 
     const botStatusRes = await db.query("SELECT value FROM settings WHERE key = 'bot_enabled'");
     const botEnabled = botStatusRes.rows[0]?.value === 'true';
@@ -76,11 +73,12 @@ async function getDashboardData() {
         connectionStatus,
         connectionError,
         liveBalance,
-        activeStrategy,
+        activeStrategy: strategyConfig.name,
         activePairs,
         botEnabled,
         trades24h,
-        winRate
+        winRate,
+        strategyConfig
     };
 }
 
@@ -96,7 +94,8 @@ export default async function DashboardPage() {
         activePairs,
         botEnabled,
         trades24h,
-        winRate
+        winRate,
+        strategyConfig
     } = await getDashboardData();
 
     // Use live balance if available, otherwise fallback to DB snapshot
@@ -181,6 +180,43 @@ export default async function DashboardPage() {
                     </CardContent>
                 </Card>
             </div>
+            <Card>
+                <CardHeader>
+                    <CardTitle>Strategy Settings</CardTitle>
+                </CardHeader>
+                <CardContent>
+                    <div className="grid gap-4 md:grid-cols-3">
+                        <div>
+                            <p className="text-sm text-muted-foreground">Strategy</p>
+                            <p className="text-lg font-semibold">{strategyConfig.name}</p>
+                        </div>
+                        <div>
+                            <p className="text-sm text-muted-foreground">Pairs</p>
+                            <p className="text-lg font-semibold">{strategyConfig.pairs.join(', ')}</p>
+                        </div>
+                        <div>
+                            <p className="text-sm text-muted-foreground">Risk</p>
+                            <p className="text-lg font-semibold">
+                                {Math.round(strategyConfig.allocationPerTrade * 100)}% per trade • min ${strategyConfig.minTradeUsd}
+                            </p>
+                        </div>
+                    </div>
+                    <div className="grid gap-4 md:grid-cols-3 mt-4">
+                        <div>
+                            <p className="text-sm text-muted-foreground">RSI Thresholds</p>
+                            <p className="text-lg font-semibold">Buy &lt; {strategyConfig.rsiBuy} | Sell &gt; {strategyConfig.rsiSell}</p>
+                        </div>
+                        <div>
+                            <p className="text-sm text-muted-foreground">Bollinger Bands</p>
+                            <p className="text-lg font-semibold">Period {strategyConfig.bbPeriod} • StdDev {strategyConfig.bbStdDev}</p>
+                        </div>
+                        <div>
+                            <p className="text-sm text-muted-foreground">Lookback</p>
+                            <p className="text-lg font-semibold">{strategyConfig.lookback} candles</p>
+                        </div>
+                    </div>
+                </CardContent>
+            </Card>
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-7">
                 <Card className="col-span-4">
                     <CardHeader>
