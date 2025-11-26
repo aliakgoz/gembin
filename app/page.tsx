@@ -1,64 +1,28 @@
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Overview } from "@/components/dashboard/overview";
-import { db } from "@/lib/db";
-import { getBalance } from "@/lib/binance";
-import { DollarSign, Activity, CreditCard, TrendingUp, CheckCircle2, XCircle } from "lucide-react";
-import {
-    Tooltip,
-    TooltipContent,
-    TooltipProvider,
-    TooltipTrigger,
-} from "@/components/ui/tooltip"
-
-export const dynamic = 'force-dynamic';
-
-async function getDashboardData() {
-    let connectionStatus = 'disconnected';
-    let connectionError = '';
-    let liveBalance = null;
-
-    try {
-        // 1. Try to fetch live balance from Binance
-        const balance = await getBalance();
-        connectionStatus = 'connected';
-
-        // Calculate total USDT balance (simplified approximation)
-        let totalUsdt = 0;
-        if (balance.total) {
-            // @ts-ignore
-            totalUsdt = balance.total['USDT'] || balance.total['USD'] || 0;
-        }
-
-        liveBalance = totalUsdt;
-
-        // 2. Save snapshot to DB
-        await db.query(
-            "INSERT INTO portfolio_snapshots (total_balance_usdt, positions) VALUES ($1, $2)",
-            [totalUsdt, JSON.stringify(balance)]
+[totalUsdt, JSON.stringify(balance)]
         );
 
     } catch (error: any) {
-        console.error("Failed to fetch live data:", error);
-        connectionStatus = 'error';
-        connectionError = error.message || 'Unknown error';
-    }
+    console.error("Failed to fetch live data:", error);
+    connectionStatus = 'error';
+    connectionError = error.message || 'Unknown error';
+}
 
-    // 3. Fetch history and other data from DB as before
-    const snapshotRes = await db.query("SELECT * FROM portfolio_snapshots ORDER BY timestamp DESC LIMIT 1");
-    const latestSnapshot = snapshotRes.rows[0] || { total_balance_usdt: 0 };
+// 3. Fetch history and other data from DB as before
+const snapshotRes = await db.query("SELECT * FROM portfolio_snapshots ORDER BY timestamp DESC LIMIT 1");
+const latestSnapshot = snapshotRes.rows[0] || { total_balance_usdt: 0 };
 
-    const historyRes = await db.query("SELECT * FROM portfolio_snapshots WHERE timestamp > NOW() - INTERVAL '24 hours' ORDER BY timestamp ASC");
+const historyRes = await db.query("SELECT * FROM portfolio_snapshots WHERE timestamp > NOW() - INTERVAL '24 hours' ORDER BY timestamp ASC");
 
-    const tradesRes = await db.query("SELECT * FROM trades ORDER BY timestamp DESC LIMIT 5");
+const tradesRes = await db.query("SELECT * FROM trades ORDER BY timestamp DESC LIMIT 5");
 
-    return {
-        latestSnapshot,
-        history: historyRes.rows,
-        recentTrades: tradesRes.rows,
-        connectionStatus,
-        connectionError,
-        liveBalance
-    };
+return {
+    latestSnapshot,
+    history: historyRes.rows,
+    recentTrades: tradesRes.rows,
+    connectionStatus,
+    connectionError,
+    liveBalance
+};
 }
 
 export default async function DashboardPage() {

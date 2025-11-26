@@ -24,3 +24,75 @@ export async function getBalance() {
 export async function getTicker(symbol: string) {
     return await binance.fetchTicker(symbol);
 }
+
+export async function calculateTotalBalanceUsdt(balance: any) {
+    let totalUsdt = 0;
+    const assets = [];
+
+    // 1. Get all non-zero balances
+    const nonZeroBalances: { asset: string; amount: number }[] = [];
+    if (balance.total) {
+        for (const [asset, amount] of Object.entries(balance.total)) {
+            if (typeof amount === 'number' && amount > 0) {
+                nonZeroBalances.push({ asset, amount });
+            }
+        }
+    }
+
+    // 2. Fetch all tickers to get current prices
+    // Note: fetching all tickers is often more efficient than fetching one by one if we have many assets
+    let tickers: any = {};
+    try {
+        tickers = await binance.fetchTickers();
+    } catch (error) {
+        console.error("Failed to fetch tickers, falling back to individual fetches", error);
+    }
+
+    // 3. Calculate value for each asset
+    for (const { asset, amount } of nonZeroBalances) {
+        let usdtValue = 0;
+        let price = 0;
+
+        if (asset === 'USDT') {
+            usdtValue = amount;
+            price = 1;
+        } else {
+            const symbol = `${asset}/USDT`;
+            // Try to find the ticker
+            const ticker = tickers[symbol];
+            if (ticker) {
+                price = ticker.last || 0;
+                usdtValue = amount * price;
+            } else {
+                // Fallback: try to fetch individual ticker if not found in bulk (e.g. if symbol format differs)
+                // or maybe it's a stablecoin like USDC/USDT
+                try {
+                    // Try direct pair
+                    const t = await binance.fetchTicker(symbol);
+                    price = t.last || 0;
+                    usdtValue = amount * price;
+                } catch (e) {
+                    // Try reverse pair (e.g. USDT/DAI - unlikely for Binance but good practice)
+                    // Or maybe it's not paired with USDT directly (e.g. BTC paired)
+                    // For simplicity, we skip complex cross-rate calculations for now unless critical.
+                    console.warn(`Could not find price for ${asset}`);
+                }
+            }
+        }
+
+        if (usdtValue > 0) {
+            totalUsdt += usdtValue;
+            assets.push({
+                asset,
+                amount,
+                price,
+                usdtValue
+            });
+        }
+    }
+
+    return {
+        totalUsdt,
+        assets
+    };
+}
