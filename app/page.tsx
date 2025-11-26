@@ -66,6 +66,12 @@ async function getDashboardData() {
     const botStatusRes = await db.query("SELECT value FROM settings WHERE key = 'bot_enabled'");
     const botEnabled = botStatusRes.rows[0]?.value === 'true';
 
+    const consultAmRes = await db.query("SELECT value FROM settings WHERE key = 'last_gpt_consult_am'");
+    const consultPmRes = await db.query("SELECT value FROM settings WHERE key = 'last_gpt_consult_pm'");
+
+    const todaySnapshots = await db.query("SELECT total_balance_usdt FROM portfolio_snapshots WHERE timestamp::date = CURRENT_DATE ORDER BY timestamp ASC");
+    const dailyDrawdown = computeDailyDrawdown(todaySnapshots.rows);
+
     return {
         latestSnapshot,
         history: historyRes.rows,
@@ -78,7 +84,10 @@ async function getDashboardData() {
         botEnabled,
         trades24h,
         winRate,
-        strategyConfig
+        strategyConfig,
+        lastConsultAm: consultAmRes.rows[0]?.value || null,
+        lastConsultPm: consultPmRes.rows[0]?.value || null,
+        dailyDrawdown
     };
 }
 
@@ -95,7 +104,10 @@ export default async function DashboardPage() {
         botEnabled,
         trades24h,
         winRate,
-        strategyConfig
+        strategyConfig,
+        lastConsultAm,
+        lastConsultPm,
+        dailyDrawdown
     } = await getDashboardData();
 
     // Use live balance if available, otherwise fallback to DB snapshot
@@ -204,15 +216,42 @@ export default async function DashboardPage() {
                     <div className="grid gap-4 md:grid-cols-3 mt-4">
                         <div>
                             <p className="text-sm text-muted-foreground">RSI Thresholds</p>
-                            <p className="text-lg font-semibold">Buy &lt; {strategyConfig.rsiBuy} | Sell &gt; {strategyConfig.rsiSell}</p>
+                            <p className="text-lg font-semibold">Buy &lt; {strategyConfig.indicators.rsiBuy} | Sell &gt; {strategyConfig.indicators.rsiSell}</p>
                         </div>
                         <div>
                             <p className="text-sm text-muted-foreground">Bollinger Bands</p>
-                            <p className="text-lg font-semibold">Period {strategyConfig.bbPeriod} • StdDev {strategyConfig.bbStdDev}</p>
+                            <p className="text-lg font-semibold">Period {strategyConfig.indicators.bbPeriod} • StdDev {strategyConfig.indicators.bbStdDev}</p>
                         </div>
                         <div>
                             <p className="text-sm text-muted-foreground">Lookback</p>
-                            <p className="text-lg font-semibold">{strategyConfig.lookback} candles</p>
+                            <p className="text-lg font-semibold">{strategyConfig.timeframe.lookback} candles ({strategyConfig.timeframe.high}/{strategyConfig.timeframe.mid}/{strategyConfig.timeframe.low})</p>
+                        </div>
+                    </div>
+                </CardContent>
+            </Card>
+            <Card>
+                <CardHeader>
+                    <CardTitle>Risk & Advisory</CardTitle>
+                </CardHeader>
+                <CardContent>
+                    <div className="grid gap-4 md:grid-cols-3">
+                        <div>
+                            <p className="text-sm text-muted-foreground">Risk per Trade</p>
+                            <p className="text-lg font-semibold">
+                                {Math.round(strategyConfig.risk.minRiskPerTrade * 100)}% - {Math.round(strategyConfig.risk.maxRiskPerTrade * 100)}%
+                            </p>
+                        </div>
+                        <div>
+                            <p className="text-sm text-muted-foreground">Daily Drawdown Limit</p>
+                            <p className="text-lg font-semibold">
+                                {Math.round(strategyConfig.risk.maxDailyDrawdown * 100)}% {dailyDrawdown !== null && `| Today ${Math.round(dailyDrawdown * 100)}%`}
+                            </p>
+                        </div>
+                        <div>
+                            <p className="text-sm text-muted-foreground">GPT Advisory</p>
+                            <p className="text-lg font-semibold">
+                                AM: {formatConsult(lastConsultAm)} • PM: {formatConsult(lastConsultPm)}
+                            </p>
                         </div>
                     </div>
                 </CardContent>
@@ -252,4 +291,25 @@ export default async function DashboardPage() {
             </div>
         </div>
     );
+}
+
+function computeDailyDrawdown(rows: any[]): number | null {
+    if (!rows || rows.length === 0) return null;
+    const balances = rows.map((r: any) => Number(r.total_balance_usdt));
+    const start = balances[0];
+    let peak = start;
+    let maxDD = 0;
+    for (const b of balances) {
+        if (b > peak) peak = b;
+        const dd = peak ? (b - peak) / peak : 0;
+        if (dd < maxDD) maxDD = dd;
+    }
+    return maxDD;
+}
+
+function formatConsult(value: string | null) {
+    if (!value) return '—';
+    const d = new Date(value);
+    if (isNaN(d.getTime())) return '—';
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }

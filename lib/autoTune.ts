@@ -1,21 +1,27 @@
 import { db } from "./db";
 import { getStrategyConfig, saveStrategyConfig, StrategyConfig, DEFAULT_CONFIG } from "./strategyConfig";
+import { selectTradablePairs } from "./pairSelection";
+import { calculateTotalBalanceUsdt, getBalance } from "./binance";
 
 type AutoTuneResult = {
     updated: boolean;
     message: string;
     config: StrategyConfig;
     aiSuggestion?: any;
+    window?: "AM" | "PM" | "ADHOC";
+    consulted?: boolean;
 };
 
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
-export async function autoTuneStrategy(): Promise<AutoTuneResult> {
+export async function autoTuneStrategy(window: "AM" | "PM" | "ADHOC" = "ADHOC"): Promise<AutoTuneResult> {
     const currentConfig = await getStrategyConfig();
 
     if (!process.env.OPENAI_API_KEY) {
         return {
             updated: false,
+            consulted: false,
+            window,
             message: "OPENAI_API_KEY not set; skipping auto-tune",
             config: currentConfig,
         };
@@ -23,38 +29,42 @@ export async function autoTuneStrategy(): Promise<AutoTuneResult> {
 
     // Gather performance data
     const [snapshotRes, tradesRes] = await Promise.all([
-        db.query("SELECT * FROM portfolio_snapshots WHERE timestamp > NOW() - INTERVAL '7 days' ORDER BY timestamp ASC"),
-        db.query("SELECT * FROM trades ORDER BY timestamp DESC LIMIT 50"),
+        db.query("SELECT * FROM portfolio_snapshots WHERE timestamp > NOW() - INTERVAL '30 days' ORDER BY timestamp ASC"),
+        db.query("SELECT * FROM trades ORDER BY timestamp DESC LIMIT 200"),
     ]);
 
     const snapshots = snapshotRes.rows;
     const trades = tradesRes.rows;
 
-    const startBalance = snapshots[0]?.total_balance_usdt ? Number(snapshots[0].total_balance_usdt) : null;
-    const endBalance = snapshots[snapshots.length - 1]?.total_balance_usdt ? Number(snapshots[snapshots.length - 1].total_balance_usdt) : startBalance;
-    const balanceChangePct = startBalance && endBalance ? ((endBalance - startBalance) / startBalance) * 100 : null;
+    const balanceStats = computeBalanceStats(snapshots);
+    const tradeStats = computeTradeStats(trades);
+    const { totalUsdt } = await calculateTotalBalanceUsdt(await getBalance());
 
-    const wins = trades.filter((t: any) => t.status === "closed" && Number(t.price) * Number(t.amount) > Number(t.cost)).length;
-    const closed = trades.filter((t: any) => t.status === "closed").length;
-    const winRate = closed > 0 ? Math.round((wins / closed) * 100) : 0;
+    // Dynamic pair universe
+    const allowedPairs = await selectTradablePairs(currentConfig);
 
-    const grossBuys = trades.filter((t: any) => t.side === "buy").reduce((acc: number, t: any) => acc + Number(t.cost), 0);
-    const grossSells = trades.filter((t: any) => t.side === "sell").reduce((acc: number, t: any) => acc + Number(t.cost), 0);
-    const approxPnl = grossSells - grossBuys;
+    // Optional external news fetch (best-effort)
+    const news = await fetchNewsDigest();
 
     const payload = {
         config: currentConfig,
         performance: {
+            totalUsdt,
             snapshots: snapshots.map((s: any) => ({
                 total_balance_usdt: Number(s.total_balance_usdt),
                 timestamp: s.timestamp,
             })),
-            balanceChangePct,
-            winRate,
-            approxPnl,
-            tradeCount: trades.length,
+            ...balanceStats,
+            ...tradeStats,
         },
         trades,
+        allowedPairs,
+        news,
+        guardrails: {
+            allocationBounds: [0.01, 0.5],
+            riskPerTrade: [currentConfig.risk.minRiskPerTrade, currentConfig.risk.maxRiskPerTrade],
+            maxDailyDrawdown: currentConfig.risk.maxDailyDrawdown,
+        },
     };
 
     try {
@@ -72,24 +82,48 @@ export async function autoTuneStrategy(): Promise<AutoTuneResult> {
                     {
                         role: "system",
                         content: [
-                            "You are an automated trading strategy tuner.",
-                            "Given performance stats, propose updated parameters.",
-                            "Respond ONLY with a JSON object matching this shape:",
+                            "You are a hedge-fund grade strategy tuner.",
+                            "Use only the provided allowedPairs list for symbols.",
+                            "Stay within guardrails; never exceed risk bounds.",
+                            "Respond ONLY with JSON in this shape:",
                             JSON.stringify({
                                 strategyName: "DynamicTrend",
                                 params: {
                                     pairs: ["BTC/USDT", "ETH/USDT"],
                                     allocationPerTrade: 0.1,
-                                    minTradeUsd: 10,
-                                    lookback: 100,
-                                    rsiBuy: 35,
-                                    rsiSell: 70,
-                                    bbPeriod: 20,
-                                    bbStdDev: 2,
+                                    minTradeUsd: 12,
+                                    timeframe: { high: "4h", mid: "1h", low: "15m", lookback: 200 },
+                                    risk: {
+                                        maxRiskPerTrade: 0.015,
+                                        minRiskPerTrade: 0.004,
+                                        maxDailyDrawdown: 0.05,
+                                        maxOpenPositions: 5,
+                                        maxPairs: 8,
+                                        minTradeUsd: 12,
+                                        slAtrMultiplier: 1.8,
+                                        tpAtrMultiplier: 2.5,
+                                    },
+                                    indicators: {
+                                        rsiBuy: 32,
+                                        rsiSell: 72,
+                                        bbPeriod: 20,
+                                        bbStdDev: 2,
+                                        stochK: 14,
+                                        stochD: 3,
+                                        macdFast: 12,
+                                        macdSlow: 26,
+                                        macdSignal: 9,
+                                    },
+                                    regime: {
+                                        volLow: 0.5,
+                                        volHigh: 2.5,
+                                        trendThresh: 0.6,
+                                        confidenceFloor: 0.35,
+                                    },
                                 },
                                 notes: "Short rationale",
+                                confidence: 0.8,
                             }),
-                            "Use conservative risk settings (allocationPerTrade max 0.5, minTradeUsd between 5-1000).",
                             "Do not include any non-JSON text.",
                         ].join(" "),
                     },
@@ -117,13 +151,17 @@ export async function autoTuneStrategy(): Promise<AutoTuneResult> {
         const updatedConfig = normalizeConfigFromAI(currentConfig, parsed);
         const saved = await saveStrategyConfig(updatedConfig);
 
+        await markConsult(window);
+
         await db.query(
             "INSERT INTO logs (level, message, meta) VALUES ($1, $2, $3)",
-            ["info", "Strategy auto-tuned", JSON.stringify({ suggestion: parsed, saved })]
+            ["info", "Strategy auto-tuned", JSON.stringify({ suggestion: parsed, saved, window })]
         );
 
         return {
             updated: true,
+            consulted: true,
+            window,
             message: "Strategy parameters updated from AI suggestion",
             config: saved,
             aiSuggestion: parsed,
@@ -131,30 +169,116 @@ export async function autoTuneStrategy(): Promise<AutoTuneResult> {
     } catch (error: any) {
         await db.query(
             "INSERT INTO logs (level, message, meta) VALUES ($1, $2, $3)",
-            ["error", "Auto-tune failed", JSON.stringify({ error: error.message })]
+            ["error", "Auto-tune failed", JSON.stringify({ error: error.message, window })]
         );
         return {
             updated: false,
+            consulted: false,
+            window,
             message: error.message || "Auto-tune failed",
             config: currentConfig,
         };
     }
 }
 
+function computeBalanceStats(rows: any[]) {
+    if (!rows.length) return { balanceChangePct: null, maxDrawdown: null, sharpeLike: null };
+    const balances = rows.map((r: any) => Number(r.total_balance_usdt));
+    const start = balances[0];
+    const end = balances[balances.length - 1];
+    const balanceChangePct = start ? ((end - start) / start) * 100 : null;
+
+    let peak = balances[0];
+    let maxDD = 0;
+    for (const v of balances) {
+        if (v > peak) peak = v;
+        const dd = peak ? (v - peak) / peak : 0;
+        maxDD = Math.min(maxDD, dd);
+    }
+
+    const returns: number[] = [];
+    for (let i = 1; i < balances.length; i++) {
+        const prev = balances[i - 1];
+        const curr = balances[i];
+        if (prev > 0) returns.push((curr - prev) / prev);
+    }
+    const avg = returns.length ? returns.reduce((a, b) => a + b, 0) / returns.length : 0;
+    const std = returns.length
+        ? Math.sqrt(returns.reduce((a, b) => a + Math.pow(b - avg, 2), 0) / returns.length)
+        : 0;
+    const sharpeLike = std > 0 ? avg / std : null;
+
+    return { balanceChangePct, maxDrawdown: maxDD, sharpeLike };
+}
+
+function computeTradeStats(trades: any[]) {
+    const closed = trades.filter(t => t.status === "closed");
+    const wins = closed.filter((t: any) => Number(t.price) * Number(t.amount) > Number(t.cost)).length;
+    const winRate = closed.length > 0 ? wins / closed.length : 0;
+
+    let grossWin = 0;
+    let grossLoss = 0;
+    for (const t of closed) {
+        const pnl = Number(t.price) * Number(t.amount) - Number(t.cost);
+        if (pnl >= 0) grossWin += pnl; else grossLoss += Math.abs(pnl);
+    }
+    const profitFactor = grossLoss > 0 ? grossWin / grossLoss : null;
+
+    return {
+        winRate,
+        profitFactor,
+        tradeCount: trades.length,
+    };
+}
+
 function normalizeConfigFromAI(current: StrategyConfig, ai: any): StrategyConfig {
     const params = ai.params || {};
     const next: StrategyConfig = {
+        ...current,
         name: ai.strategyName || current.name || DEFAULT_CONFIG.name,
         pairs: Array.isArray(params.pairs) && params.pairs.length > 0 ? params.pairs : current.pairs,
         allocationPerTrade: Number(params.allocationPerTrade ?? current.allocationPerTrade),
         minTradeUsd: Number(params.minTradeUsd ?? current.minTradeUsd),
-        lookback: Number(params.lookback ?? current.lookback),
-        rsiBuy: Number(params.rsiBuy ?? current.rsiBuy),
-        rsiSell: Number(params.rsiSell ?? current.rsiSell),
-        bbPeriod: Number(params.bbPeriod ?? current.bbPeriod),
-        bbStdDev: Number(params.bbStdDev ?? current.bbStdDev),
+        timeframe: {
+            ...current.timeframe,
+            ...(params.timeframe || {}),
+        },
+        risk: {
+            ...current.risk,
+            ...(params.risk || {}),
+        },
+        indicators: {
+            ...current.indicators,
+            ...(params.indicators || {}),
+        },
+        regime: {
+            ...current.regime,
+            ...(params.regime || {}),
+        },
     };
     return next;
+}
+
+async function markConsult(window: "AM" | "PM" | "ADHOC") {
+    if (window === "ADHOC") return;
+    await db.query(
+        "INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = CURRENT_TIMESTAMP",
+        [`last_gpt_consult_${window.toLowerCase()}`, new Date().toISOString()]
+    );
+}
+
+async function fetchNewsDigest() {
+    const url = process.env.NEWS_FEED_URL;
+    if (!url) return [];
+    try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`news fetch failed ${res.status}`);
+        const data = await res.json();
+        return Array.isArray(data) ? data.slice(0, 10) : data.articles?.slice(0, 10) || [];
+    } catch (error) {
+        console.error("News fetch failed", error);
+        return [];
+    }
 }
 
 function safeParse(value: string) {
