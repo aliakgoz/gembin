@@ -1,35 +1,82 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Overview } from "@/components/dashboard/overview";
 import { db } from "@/lib/db";
-import { DollarSign, Activity, CreditCard, TrendingUp } from "lucide-react";
+import { getBalance } from "@/lib/binance";
+import { DollarSign, Activity, CreditCard, TrendingUp, CheckCircle2, XCircle } from "lucide-react";
 
 export const dynamic = 'force-dynamic';
 
 async function getDashboardData() {
-    // Fetch latest snapshot
+    let connectionStatus = 'disconnected';
+    let liveBalance = null;
+
+    try {
+        // 1. Try to fetch live balance from Binance
+        const balance = await getBalance();
+        connectionStatus = 'connected';
+
+        // Calculate total USDT balance (simplified approximation)
+        // In a real app, you'd iterate over balance.total and multiply by current price
+        // For now, we'll try to find 'USDT' or 'USD' in the total
+        let totalUsdt = 0;
+        if (balance.total) {
+            // @ts-ignore
+            totalUsdt = balance.total['USDT'] || balance.total['USD'] || 0;
+            // If 0, maybe we have other assets. For this MVP, let's just assume 0 if no USDT.
+            // A better approach would be to fetch ticker prices for all non-zero assets.
+        }
+
+        liveBalance = totalUsdt;
+
+        // 2. Save snapshot to DB
+        await db.query(
+            "INSERT INTO portfolio_snapshots (total_balance_usdt, positions) VALUES ($1, $2)",
+            [totalUsdt, JSON.stringify(balance)]
+        );
+
+    } catch (error) {
+        console.error("Failed to fetch live data:", error);
+        connectionStatus = 'error';
+    }
+
+    // 3. Fetch history and other data from DB as before
     const snapshotRes = await db.query("SELECT * FROM portfolio_snapshots ORDER BY timestamp DESC LIMIT 1");
     const latestSnapshot = snapshotRes.rows[0] || { total_balance_usdt: 0 };
 
-    // Fetch history for chart (last 24h)
     const historyRes = await db.query("SELECT * FROM portfolio_snapshots WHERE timestamp > NOW() - INTERVAL '24 hours' ORDER BY timestamp ASC");
 
-    // Fetch recent trades
     const tradesRes = await db.query("SELECT * FROM trades ORDER BY timestamp DESC LIMIT 5");
 
     return {
         latestSnapshot,
         history: historyRes.rows,
-        recentTrades: tradesRes.rows
+        recentTrades: tradesRes.rows,
+        connectionStatus,
+        liveBalance
     };
 }
 
 export default async function DashboardPage() {
-    const { latestSnapshot, history, recentTrades } = await getDashboardData();
+    const { latestSnapshot, history, recentTrades, connectionStatus, liveBalance } = await getDashboardData();
+
+    // Use live balance if available, otherwise fallback to DB snapshot
+    const displayBalance = liveBalance !== null ? liveBalance : latestSnapshot.total_balance_usdt;
 
     return (
         <div className="flex-1 space-y-4 p-8 pt-6">
             <div className="flex items-center justify-between space-y-2">
                 <h2 className="text-3xl font-bold tracking-tight">Dashboard</h2>
+                <div className="flex items-center space-x-2">
+                    {connectionStatus === 'connected' ? (
+                        <span className="flex items-center text-sm text-green-500 bg-green-100 px-2 py-1 rounded-full">
+                            <CheckCircle2 className="mr-1 h-4 w-4" /> Connected
+                        </span>
+                    ) : (
+                        <span className="flex items-center text-sm text-red-500 bg-red-100 px-2 py-1 rounded-full">
+                            <XCircle className="mr-1 h-4 w-4" /> Disconnected
+                        </span>
+                    )}
+                </div>
             </div>
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
                 <Card>
@@ -40,7 +87,7 @@ export default async function DashboardPage() {
                         <DollarSign className="h-4 w-4 text-muted-foreground" />
                     </CardHeader>
                     <CardContent>
-                        <div className="text-2xl font-bold">${Number(latestSnapshot.total_balance_usdt).toFixed(2)}</div>
+                        <div className="text-2xl font-bold">${Number(displayBalance).toFixed(2)}</div>
                         <p className="text-xs text-muted-foreground">
                             +20.1% from last month
                         </p>
