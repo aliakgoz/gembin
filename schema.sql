@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS trades (
     cost DECIMAL(20, 8) NOT NULL,
     fee DECIMAL(20, 8),
     fee_currency VARCHAR(10),
+    sl_price DECIMAL(20, 8), -- Stop Loss Price
+    tp_price DECIMAL(20, 8), -- Take Profit Price
     timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     strategy VARCHAR(50),
     status VARCHAR(20) DEFAULT 'closed', -- 'open', 'closed', 'canceled'

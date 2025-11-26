@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server';
-import { binance, getBalance, calculateTotalBalanceUsdt } from '@/lib/binance';
+import { binance, getBalance, calculateTotalBalanceUsdt, getTicker } from '@/lib/binance';
 import { analyzeMarket } from '@/lib/strategy';
 import { db } from '@/lib/db';
 import { autoTuneStrategy } from '@/lib/autoTune';
-import { getStrategyConfig } from '@/lib/strategyConfig';
+import { getStrategyConfig, StrategyConfig } from '@/lib/strategyConfig';
 import { selectTradablePairs } from '@/lib/pairSelection';
 
 export const dynamic = 'force-dynamic'; // static by default, unless reading the request
@@ -42,7 +42,10 @@ export async function GET(request: Request) {
             return NextResponse.json({ message: 'Daily drawdown limit hit, trades paused', dd, limit: ddLimit }, { status: 200 });
         }
 
-        // 3. Analyze & Execute
+        // 3. Manage Open Positions (SL/TP)
+        await checkOpenPositions(config);
+
+        // 4. Analyze & Execute New Trades
         for (const symbol of pairs) {
             try {
                 const analysis = await analyzeMarket(symbol, config);
@@ -62,11 +65,11 @@ export async function GET(request: Request) {
                         // Execute Market Buy
                         // const order = await binance.createMarketBuyOrder(symbol, amount);
                         // For safety, we'll just log it as a "Paper Trade" for now until verified
-                        const order = { id: 'paper_' + Date.now(), symbol, side: 'buy', amount, price: analysis.price, cost: tradeAmountUSDT, status: 'closed' };
+                        const order = { id: 'paper_' + Date.now(), symbol, side: 'buy', amount, price: analysis.price, cost: tradeAmountUSDT, status: 'open' };
 
                         await db.query(
-                            "INSERT INTO trades (symbol, side, amount, price, cost, strategy, status, order_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-                            [symbol, 'buy', amount, analysis.price, tradeAmountUSDT, 'DynamicTrend', 'closed', order.id]
+                            "INSERT INTO trades (symbol, side, amount, price, cost, sl_price, tp_price, strategy, status, order_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                            [symbol, 'buy', amount, analysis.price, tradeAmountUSDT, analysis.sl, analysis.tp, 'DynamicTrend', 'open', order.id]
                         );
                         results.push({ symbol, action: 'BUY', order, analysis });
                     } else {
@@ -88,6 +91,9 @@ export async function GET(request: Request) {
                             "INSERT INTO trades (symbol, side, amount, price, cost, strategy, status, order_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
                             [symbol, 'sell', assetBalance, analysis.price, assetBalance * analysis.price, 'DynamicTrend', 'closed', order.id]
                         );
+                        // Close any open buy trades for this symbol
+                        await db.query("UPDATE trades SET status = 'closed' WHERE symbol = $1 AND status = 'open'", [symbol]);
+
                         results.push({ symbol, action: 'SELL', order, analysis });
                     }
                 } else {
@@ -100,7 +106,7 @@ export async function GET(request: Request) {
             }
         }
 
-        // 4. Take Snapshot
+        // 5. Take Snapshot
         const totalBalance = await getBalance();
         const { totalUsdt, assets } = await calculateTotalBalanceUsdt(totalBalance);
 
@@ -163,4 +169,50 @@ function isSameDay(dateStr?: string) {
 
 function clamp(value: number, min: number, max: number) {
     return Math.min(Math.max(value, min), max);
+}
+
+async function checkOpenPositions(config: StrategyConfig) {
+    const res = await db.query("SELECT * FROM trades WHERE status = 'open'");
+    const openTrades = res.rows;
+
+    for (const trade of openTrades) {
+        try {
+            const ticker = await getTicker(trade.symbol);
+            const currentPrice = ticker.last;
+            if (!currentPrice) continue;
+
+            let action = null;
+            let reason = '';
+
+            // Check SL
+            if (trade.sl_price && currentPrice <= Number(trade.sl_price)) {
+                action = 'sell';
+                reason = 'Stop Loss Hit';
+            }
+            // Check TP
+            else if (trade.tp_price && currentPrice >= Number(trade.tp_price)) {
+                action = 'sell';
+                reason = 'Take Profit Hit';
+            }
+
+            if (action === 'sell') {
+                const amount = Number(trade.amount);
+                // Execute Sell
+                // await binance.createMarketSellOrder(trade.symbol, amount);
+                const order = { id: 'paper_sl_tp_' + Date.now(), symbol: trade.symbol, side: 'sell', amount, price: currentPrice, cost: amount * currentPrice, status: 'closed' };
+
+                await db.query(
+                    "INSERT INTO trades (symbol, side, amount, price, cost, strategy, status, order_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                    [trade.symbol, 'sell', amount, currentPrice, amount * currentPrice, 'RiskManager', 'closed', order.id]
+                );
+
+                // Close the original trade
+                await db.query("UPDATE trades SET status = 'closed' WHERE id = $1", [trade.id]);
+
+                await db.query("INSERT INTO logs (level, message, meta) VALUES ($1, $2, $3)", ['info', `Risk Manager: ${reason} for ${trade.symbol}`, JSON.stringify({ trade, currentPrice, reason })]);
+            }
+        } catch (error: any) {
+            console.error(`Error checking position for ${trade.symbol}`, error);
+        }
+    }
 }

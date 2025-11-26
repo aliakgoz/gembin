@@ -24,6 +24,8 @@ export interface StrategyResult {
         momentumScore: number;
         volatilityScore: number;
     };
+    sl?: number;
+    tp?: number;
 }
 
 export async function analyzeMarket(symbol: string, config?: StrategyConfig): Promise<StrategyResult> {
@@ -87,6 +89,10 @@ export async function analyzeMarket(symbol: string, config?: StrategyConfig): Pr
         confidence > cfg.regime.confidenceFloor;
 
     if (buySignal) {
+        const atr = lowTf.last * lowTf.atrPct;
+        const sl = price - (atr * cfg.risk.slAtrMultiplier);
+        const tp = price + (atr * cfg.risk.tpAtrMultiplier);
+
         return {
             action: 'BUY',
             symbol,
@@ -95,6 +101,8 @@ export async function analyzeMarket(symbol: string, config?: StrategyConfig): Pr
             confidence,
             regime,
             signals: { trendScore, momentumScore, volatilityScore },
+            sl,
+            tp
         };
     }
 
