@@ -77,18 +77,16 @@ export default async function DashboardPage() {
                             <CheckCircle2 className="mr-1 h-4 w-4" /> Connected
                         </span>
                     ) : (
-                        <TooltipProvider>
-                            <Tooltip>
-                                <TooltipTrigger>
-                                    <span className="flex items-center text-sm text-red-500 bg-red-100 px-2 py-1 rounded-full cursor-help">
-                                        <XCircle className="mr-1 h-4 w-4" /> Disconnected
-                                    </span>
-                                </TooltipTrigger>
-                                <TooltipContent>
-                                    <p>Error: {connectionError}</p>
-                                </TooltipContent>
-                            </Tooltip>
-                        </TooltipProvider>
+                        <div className="flex items-center space-x-2">
+                            <span className="flex items-center text-sm text-red-500 bg-red-100 px-2 py-1 rounded-full">
+                                <XCircle className="mr-1 h-4 w-4" /> Disconnected
+                            </span>
+                            {connectionError && (
+                                <span className="text-xs text-red-500 max-w-[200px] truncate" title={connectionError}>
+                                    {connectionError}
+                                </span>
+                            )}
+                        </div>
                     )}
                 </div>
             </div>
