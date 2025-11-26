@@ -74,15 +74,15 @@ export async function analyzeMarket(symbol: string, config?: StrategyConfig): Pr
 
     const buySignal =
         lowTf.rsi < cfg.indicators.rsiBuy &&
-        lowTf.stochK < 25 &&
-        lowTf.macdHist > 0 &&
+        lowTf.stochK < 45 && // Relaxed from 25
+        // lowTf.macdHist > 0 && // Removed strict MACD check, rely on trendScore
         trendScore > cfg.regime.trendThresh &&
         confidence > cfg.regime.confidenceFloor;
 
     const sellSignal =
         lowTf.rsi > cfg.indicators.rsiSell &&
-        lowTf.macdHist < 0 &&
-        lowTf.stochK > 75 &&
+        // lowTf.macdHist < 0 && // Removed strict MACD check
+        lowTf.stochK > 55 && // Relaxed from 75
         trendScore < -cfg.regime.trendThresh &&
         confidence > cfg.regime.confidenceFloor;
 

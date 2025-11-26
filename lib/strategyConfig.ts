@@ -49,7 +49,7 @@ export type StrategyConfig = {
 const DEFAULT_CONFIG: StrategyConfig = {
     name: "DynamicTrend",
     pairs: ["BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT"],
-    allocationPerTrade: 0.1,
+    allocationPerTrade: 0.25,
     minTradeUsd: 10,
     timeframe: {
         high: "4h",
@@ -58,18 +58,18 @@ const DEFAULT_CONFIG: StrategyConfig = {
         lookback: 200,
     },
     risk: {
-        maxRiskPerTrade: 0.018,
-        minRiskPerTrade: 0.0035,
-        maxDailyDrawdown: 0.05,
-        maxOpenPositions: 6,
-        maxPairs: 8,
+        maxRiskPerTrade: 0.25,
+        minRiskPerTrade: 0.05,
+        maxDailyDrawdown: 0.15,
+        maxOpenPositions: 4,
+        maxPairs: 10,
         minTradeUsd: 12,
-        slAtrMultiplier: 1.9,
-        tpAtrMultiplier: 2.4,
+        slAtrMultiplier: 1.5,
+        tpAtrMultiplier: 3.0,
     },
     indicators: {
-        rsiBuy: 35,
-        rsiSell: 70,
+        rsiBuy: 45,
+        rsiSell: 55,
         bbPeriod: 20,
         bbStdDev: 2,
         stochK: 14,
@@ -81,8 +81,8 @@ const DEFAULT_CONFIG: StrategyConfig = {
     regime: {
         volLow: 0.5,
         volHigh: 2.5,
-        trendThresh: 0.6,
-        confidenceFloor: 0.35,
+        trendThresh: 0.3,
+        confidenceFloor: 0.2,
     },
 };
 
@@ -112,34 +112,34 @@ function mergeConfig(raw: any): StrategyConfig {
     };
 
     // Clamp numeric fields to avoid unsafe values
-    merged.allocationPerTrade = clamp(merged.allocationPerTrade, 0.01, 0.5);
+    merged.allocationPerTrade = clamp(merged.allocationPerTrade, 0.01, 1.0);
     merged.minTradeUsd = clamp(merged.minTradeUsd, 5, 1000);
 
     merged.timeframe.lookback = clampInt(merged.timeframe.lookback, 50, 600);
 
-    merged.risk.maxRiskPerTrade = clamp(merged.risk.maxRiskPerTrade, 0.005, 0.02);
+    merged.risk.maxRiskPerTrade = clamp(merged.risk.maxRiskPerTrade, 0.01, 1.0);
     merged.risk.minRiskPerTrade = clamp(merged.risk.minRiskPerTrade, 0.002, merged.risk.maxRiskPerTrade);
-    merged.risk.maxDailyDrawdown = clamp(merged.risk.maxDailyDrawdown, 0.02, 0.08);
-    merged.risk.maxOpenPositions = clampInt(merged.risk.maxOpenPositions, 1, 15);
-    merged.risk.maxPairs = clampInt(merged.risk.maxPairs, 1, 20);
+    merged.risk.maxDailyDrawdown = clamp(merged.risk.maxDailyDrawdown, 0.05, 0.50);
+    merged.risk.maxOpenPositions = clampInt(merged.risk.maxOpenPositions, 1, 20);
+    merged.risk.maxPairs = clampInt(merged.risk.maxPairs, 1, 50);
     merged.risk.minTradeUsd = clamp(merged.risk.minTradeUsd, 5, 1000);
-    merged.risk.slAtrMultiplier = clamp(merged.risk.slAtrMultiplier, 1.0, 3.0);
-    merged.risk.tpAtrMultiplier = clamp(merged.risk.tpAtrMultiplier, 1.5, 4.0);
+    merged.risk.slAtrMultiplier = clamp(merged.risk.slAtrMultiplier, 0.5, 5.0);
+    merged.risk.tpAtrMultiplier = clamp(merged.risk.tpAtrMultiplier, 1.0, 10.0);
 
-    merged.indicators.rsiBuy = clamp(merged.indicators.rsiBuy, 5, 60);
-    merged.indicators.rsiSell = clamp(merged.indicators.rsiSell, 50, 95);
-    merged.indicators.bbPeriod = clampInt(merged.indicators.bbPeriod, 10, 120);
+    merged.indicators.rsiBuy = clamp(merged.indicators.rsiBuy, 5, 80);
+    merged.indicators.rsiSell = clamp(merged.indicators.rsiSell, 20, 95);
+    merged.indicators.bbPeriod = clampInt(merged.indicators.bbPeriod, 5, 120);
     merged.indicators.bbStdDev = clamp(merged.indicators.bbStdDev, 0.5, 5);
-    merged.indicators.stochK = clampInt(merged.indicators.stochK, 5, 50);
+    merged.indicators.stochK = clampInt(merged.indicators.stochK, 2, 50);
     merged.indicators.stochD = clampInt(merged.indicators.stochD, 2, 20);
-    merged.indicators.macdFast = clampInt(merged.indicators.macdFast, 5, 20);
-    merged.indicators.macdSlow = clampInt(merged.indicators.macdSlow, 15, 40);
-    merged.indicators.macdSignal = clampInt(merged.indicators.macdSignal, 5, 15);
+    merged.indicators.macdFast = clampInt(merged.indicators.macdFast, 2, 50);
+    merged.indicators.macdSlow = clampInt(merged.indicators.macdSlow, 10, 100);
+    merged.indicators.macdSignal = clampInt(merged.indicators.macdSignal, 2, 30);
 
-    merged.regime.volLow = clamp(merged.regime.volLow, 0.1, 2.0);
-    merged.regime.volHigh = clamp(merged.regime.volHigh, merged.regime.volLow, 5.0);
-    merged.regime.trendThresh = clamp(merged.regime.trendThresh, 0.2, 1.0);
-    merged.regime.confidenceFloor = clamp(merged.regime.confidenceFloor, 0.1, 0.8);
+    merged.regime.volLow = clamp(merged.regime.volLow, 0.1, 5.0);
+    merged.regime.volHigh = clamp(merged.regime.volHigh, merged.regime.volLow, 10.0);
+    merged.regime.trendThresh = clamp(merged.regime.trendThresh, 0.1, 1.0);
+    merged.regime.confidenceFloor = clamp(merged.regime.confidenceFloor, 0.1, 0.9);
 
     return merged;
 }
