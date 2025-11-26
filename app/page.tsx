@@ -1,32 +1,103 @@
-[totalUsdt, JSON.stringify(balance)]
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Overview } from "@/components/dashboard/overview";
+import { db } from "@/lib/db";
+import { getBalance, calculateTotalBalanceUsdt } from "@/lib/binance";
+import { DollarSign, Activity, CreditCard, TrendingUp, CheckCircle2, XCircle } from "lucide-react";
+
+export const dynamic = 'force-dynamic';
+
+async function getDashboardData() {
+    let connectionStatus = 'disconnected';
+    let connectionError = '';
+    let liveBalance = null;
+
+    try {
+        // 1. Try to fetch live balance from Binance
+        const balance = await getBalance();
+        connectionStatus = 'connected';
+
+        // Calculate total USDT balance using real-time prices
+        const { totalUsdt } = await calculateTotalBalanceUsdt(balance);
+
+        liveBalance = totalUsdt;
+
+        // 2. Save snapshot to DB
+        await db.query(
+            "INSERT INTO portfolio_snapshots (total_balance_usdt, positions) VALUES ($1, $2)",
+            [totalUsdt, JSON.stringify(balance)]
         );
 
     } catch (error: any) {
-    console.error("Failed to fetch live data:", error);
-    connectionStatus = 'error';
-    connectionError = error.message || 'Unknown error';
-}
+        console.error("Failed to fetch live data:", error);
+        connectionStatus = 'error';
+        connectionError = error.message || 'Unknown error';
+    }
 
-// 3. Fetch history and other data from DB as before
-const snapshotRes = await db.query("SELECT * FROM portfolio_snapshots ORDER BY timestamp DESC LIMIT 1");
-const latestSnapshot = snapshotRes.rows[0] || { total_balance_usdt: 0 };
+    // 3. Fetch history and other data from DB
+    const snapshotRes = await db.query("SELECT * FROM portfolio_snapshots ORDER BY timestamp DESC LIMIT 1");
+    const latestSnapshot = snapshotRes.rows[0] || { total_balance_usdt: 0 };
 
-const historyRes = await db.query("SELECT * FROM portfolio_snapshots WHERE timestamp > NOW() - INTERVAL '24 hours' ORDER BY timestamp ASC");
+    const historyRes = await db.query("SELECT * FROM portfolio_snapshots WHERE timestamp > NOW() - INTERVAL '24 hours' ORDER BY timestamp ASC");
 
-const tradesRes = await db.query("SELECT * FROM trades ORDER BY timestamp DESC LIMIT 5");
+    const tradesRes = await db.query("SELECT * FROM trades ORDER BY timestamp DESC LIMIT 5");
 
-return {
-    latestSnapshot,
-    history: historyRes.rows,
-    recentTrades: tradesRes.rows,
-    connectionStatus,
-    connectionError,
-    liveBalance
-};
+    // Calculate 24h stats
+    const trades24hRes = await db.query("SELECT count(*) as count FROM trades WHERE timestamp > NOW() - INTERVAL '24 hours'");
+    const trades24h = parseInt(trades24hRes.rows[0].count);
+
+    // Calculate Win Rate (all time)
+    const winRateRes = await db.query(`
+        SELECT 
+            count(*) filter (where status = 'closed' and (price * amount) > cost) as wins,
+            count(*) filter (where status = 'closed') as total
+        FROM trades
+    `);
+    const wins = parseInt(winRateRes.rows[0].wins || '0');
+    const totalClosed = parseInt(winRateRes.rows[0].total || '0');
+    const winRate = totalClosed > 0 ? Math.round((wins / totalClosed) * 100) : 0;
+
+    // Active strategy + pair coverage (fallbacks mirror cron defaults)
+    const strategyRes = await db.query("SELECT strategy FROM trades WHERE strategy IS NOT NULL AND strategy <> '' ORDER BY timestamp DESC LIMIT 1");
+    const defaultStrategy = 'DynamicTrend';
+    const activeStrategy = strategyRes.rows[0]?.strategy || defaultStrategy;
+
+    const pairCountRes = await db.query("SELECT COUNT(DISTINCT symbol) as count FROM trades WHERE timestamp > NOW() - INTERVAL '30 days'");
+    const defaultPairs = ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT'];
+    const tradedPairCount = parseInt(pairCountRes.rows[0]?.count || '0');
+    const activePairs = tradedPairCount > 0 ? tradedPairCount : defaultPairs.length;
+
+    const botStatusRes = await db.query("SELECT value FROM settings WHERE key = 'bot_enabled'");
+    const botEnabled = botStatusRes.rows[0]?.value === 'true';
+
+    return {
+        latestSnapshot,
+        history: historyRes.rows,
+        recentTrades: tradesRes.rows,
+        connectionStatus,
+        connectionError,
+        liveBalance,
+        activeStrategy,
+        activePairs,
+        botEnabled,
+        trades24h,
+        winRate
+    };
 }
 
 export default async function DashboardPage() {
-    const { latestSnapshot, history, recentTrades, connectionStatus, connectionError, liveBalance } = await getDashboardData();
+    const {
+        latestSnapshot,
+        history,
+        recentTrades,
+        connectionStatus,
+        connectionError,
+        liveBalance,
+        activeStrategy,
+        activePairs,
+        botEnabled,
+        trades24h,
+        winRate
+    } = await getDashboardData();
 
     // Use live balance if available, otherwise fallback to DB snapshot
     const displayBalance = liveBalance !== null ? liveBalance : latestSnapshot.total_balance_usdt;
@@ -65,7 +136,7 @@ export default async function DashboardPage() {
                     <CardContent>
                         <div className="text-2xl font-bold">${Number(displayBalance).toFixed(2)}</div>
                         <p className="text-xs text-muted-foreground">
-                            +20.1% from last month
+                            Portfolio Value
                         </p>
                     </CardContent>
                 </Card>
@@ -77,9 +148,9 @@ export default async function DashboardPage() {
                         <Activity className="h-4 w-4 text-muted-foreground" />
                     </CardHeader>
                     <CardContent>
-                        <div className="text-2xl font-bold">Dynamic Trend</div>
+                        <div className="text-2xl font-bold">{activeStrategy}</div>
                         <p className="text-xs text-muted-foreground">
-                            Running on 5 pairs
+                            {botEnabled ? 'Running' : 'Stopped'} on {activePairs} pair{activePairs === 1 ? '' : 's'}
                         </p>
                     </CardContent>
                 </Card>
@@ -89,9 +160,9 @@ export default async function DashboardPage() {
                         <CreditCard className="h-4 w-4 text-muted-foreground" />
                     </CardHeader>
                     <CardContent>
-                        <div className="text-2xl font-bold">+{recentTrades.length}</div>
+                        <div className="text-2xl font-bold">{trades24h}</div>
                         <p className="text-xs text-muted-foreground">
-                            +19% from yesterday
+                            Executed in last 24h
                         </p>
                     </CardContent>
                 </Card>
@@ -103,9 +174,9 @@ export default async function DashboardPage() {
                         <TrendingUp className="h-4 w-4 text-muted-foreground" />
                     </CardHeader>
                     <CardContent>
-                        <div className="text-2xl font-bold">65%</div>
+                        <div className="text-2xl font-bold">{winRate}%</div>
                         <p className="text-xs text-muted-foreground">
-                            +2% from last week
+                            All time performance
                         </p>
                     </CardContent>
                 </Card>
