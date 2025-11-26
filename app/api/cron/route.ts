@@ -30,6 +30,9 @@ export async function GET(request: Request) {
         const pairs = await selectTradablePairs(config);
 
         const results = [];
+        // Single balance snapshot to reduce API calls
+        const balance = await getBalance();
+        const usdtBalance = Number((balance as any)?.total?.USDT ?? (balance as any)?.free?.USDT ?? 0);
 
         // Daily drawdown guardrail
         const ddLimit = config.risk.maxDailyDrawdown;
@@ -50,10 +53,6 @@ export async function GET(request: Request) {
                 }
 
                 if (analysis.action === 'BUY') {
-                    // Check Balance
-                    const balance = await getBalance();
-                    const usdtBalance = Number((balance as any)?.total?.USDT ?? (balance as any)?.free?.USDT ?? 0);
-
                     // Risk Management from config
                     const riskPct = clamp(config.allocationPerTrade, config.risk.minRiskPerTrade, config.risk.maxRiskPerTrade);
                     const tradeAmountUSDT = usdtBalance * riskPct;

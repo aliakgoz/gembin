@@ -17,15 +17,21 @@ export async function selectTradablePairs(config: StrategyConfig): Promise<strin
         const candidates: PairInfo[] = [];
         const heldPairs = new Set<string>();
 
-        if (balance && (balance as any).total) {
-            for (const [asset, amount] of Object.entries((balance as any).total as Record<string, number>)) {
+        const addHeld = (obj: Record<string, number> | undefined) => {
+            if (!obj) return;
+            for (const [asset, amount] of Object.entries(obj)) {
                 const qty = Number(amount);
                 if (!qty || !Number.isFinite(qty)) continue;
                 if (asset === "USDT") continue;
                 const sym = `${asset}/USDT`;
                 heldPairs.add(sym);
             }
-        }
+        };
+
+        // Include both total and free balances to capture any held asset
+        const bAny = balance as any;
+        addHeld(bAny?.total);
+        addHeld(bAny?.free);
 
         for (const [symbol, ticker] of Object.entries(tickers)) {
             if (!symbol.endsWith("/USDT")) continue;
