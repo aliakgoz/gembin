@@ -3,11 +3,18 @@ import { Overview } from "@/components/dashboard/overview";
 import { db } from "@/lib/db";
 import { getBalance } from "@/lib/binance";
 import { DollarSign, Activity, CreditCard, TrendingUp, CheckCircle2, XCircle } from "lucide-react";
+import {
+    Tooltip,
+    TooltipContent,
+    TooltipProvider,
+    TooltipTrigger,
+} from "@/components/ui/tooltip"
 
 export const dynamic = 'force-dynamic';
 
 async function getDashboardData() {
     let connectionStatus = 'disconnected';
+    let connectionError = '';
     let liveBalance = null;
 
     try {
@@ -16,14 +23,10 @@ async function getDashboardData() {
         connectionStatus = 'connected';
 
         // Calculate total USDT balance (simplified approximation)
-        // In a real app, you'd iterate over balance.total and multiply by current price
-        // For now, we'll try to find 'USDT' or 'USD' in the total
         let totalUsdt = 0;
         if (balance.total) {
             // @ts-ignore
             totalUsdt = balance.total['USDT'] || balance.total['USD'] || 0;
-            // If 0, maybe we have other assets. For this MVP, let's just assume 0 if no USDT.
-            // A better approach would be to fetch ticker prices for all non-zero assets.
         }
 
         liveBalance = totalUsdt;
@@ -34,9 +37,10 @@ async function getDashboardData() {
             [totalUsdt, JSON.stringify(balance)]
         );
 
-    } catch (error) {
+    } catch (error: any) {
         console.error("Failed to fetch live data:", error);
         connectionStatus = 'error';
+        connectionError = error.message || 'Unknown error';
     }
 
     // 3. Fetch history and other data from DB as before
@@ -52,12 +56,13 @@ async function getDashboardData() {
         history: historyRes.rows,
         recentTrades: tradesRes.rows,
         connectionStatus,
+        connectionError,
         liveBalance
     };
 }
 
 export default async function DashboardPage() {
-    const { latestSnapshot, history, recentTrades, connectionStatus, liveBalance } = await getDashboardData();
+    const { latestSnapshot, history, recentTrades, connectionStatus, connectionError, liveBalance } = await getDashboardData();
 
     // Use live balance if available, otherwise fallback to DB snapshot
     const displayBalance = liveBalance !== null ? liveBalance : latestSnapshot.total_balance_usdt;
@@ -72,9 +77,18 @@ export default async function DashboardPage() {
                             <CheckCircle2 className="mr-1 h-4 w-4" /> Connected
                         </span>
                     ) : (
-                        <span className="flex items-center text-sm text-red-500 bg-red-100 px-2 py-1 rounded-full">
-                            <XCircle className="mr-1 h-4 w-4" /> Disconnected
-                        </span>
+                        <TooltipProvider>
+                            <Tooltip>
+                                <TooltipTrigger>
+                                    <span className="flex items-center text-sm text-red-500 bg-red-100 px-2 py-1 rounded-full cursor-help">
+                                        <XCircle className="mr-1 h-4 w-4" /> Disconnected
+                                    </span>
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                    <p>Error: {connectionError}</p>
+                                </TooltipContent>
+                            </Tooltip>
+                        </TooltipProvider>
                     )}
                 </div>
             </div>

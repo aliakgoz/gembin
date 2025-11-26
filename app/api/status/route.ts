@@ -25,7 +25,8 @@ export async function GET() {
         console.error("Binance connection error:", error);
         return NextResponse.json({
             status: 'error',
-            message: error.message || 'Failed to connect to Binance'
+            message: error.message || 'Failed to connect to Binance',
+            details: error.toString()
         }, { status: 500 });
     }
 }
