@@ -1,4 +1,4 @@
-import { binance } from "./binance";
+import { binance, getBalance } from "./binance";
 import { StrategyConfig } from "./strategyConfig";
 
 type PairInfo = {
@@ -12,8 +12,21 @@ const DEFAULT_MAX_RESULTS = 12;
 
 export async function selectTradablePairs(config: StrategyConfig): Promise<string[]> {
     try {
+        const balance = await getBalance();
         const tickers = await binance.fetchTickers();
         const candidates: PairInfo[] = [];
+        const heldPairs = new Set<string>();
+
+        if (balance && (balance as any).total) {
+            for (const [asset, amount] of Object.entries((balance as any).total as Record<string, number>)) {
+                const qty = Number(amount);
+                if (!qty || !Number.isFinite(qty)) continue;
+                if (asset === "USDT") continue;
+                const sym = `${asset}/USDT`;
+                heldPairs.add(sym);
+            }
+        }
+
         for (const [symbol, ticker] of Object.entries(tickers)) {
             if (!symbol.endsWith("/USDT")) continue;
             const t: any = ticker;
@@ -45,7 +58,13 @@ export async function selectTradablePairs(config: StrategyConfig): Promise<strin
 
         const sorted = filtered.sort((a, b) => b.volume - a.volume);
         const limit = Math.min(config.risk.maxPairs, DEFAULT_MAX_RESULTS);
-        const picked = sorted.slice(0, limit).map(c => c.symbol);
+
+        // Start with held pairs so existing positions are always tradable
+        const picked: string[] = Array.from(heldPairs);
+        for (const c of sorted) {
+            if (picked.length >= limit) break;
+            if (!picked.includes(c.symbol)) picked.push(c.symbol);
+        }
 
         if (picked.length > 0) return picked;
     } catch (error) {
