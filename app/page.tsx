@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { getBalance, calculateTotalBalanceUsdt } from "@/lib/binance";
 import { DollarSign, Activity, CreditCard, TrendingUp, CheckCircle2, XCircle } from "lucide-react";
 import { getStrategyConfig } from "@/lib/strategyConfig";
+import { selectTradablePairs } from "@/lib/pairSelection";
 
 export const dynamic = 'force-dynamic';
 
@@ -61,7 +62,8 @@ async function getDashboardData() {
 
     const pairCountRes = await db.query("SELECT COUNT(DISTINCT symbol) as count FROM trades WHERE timestamp > NOW() - INTERVAL '30 days'");
     const tradedPairCount = parseInt(pairCountRes.rows[0]?.count || '0');
-    const activePairs = tradedPairCount > 0 ? tradedPairCount : strategyConfig.pairs.length;
+    const tradablePairs = await selectTradablePairs(strategyConfig);
+    const activePairs = tradedPairCount > 0 ? tradedPairCount : tradablePairs.length;
 
     const botStatusRes = await db.query("SELECT value FROM settings WHERE key = 'bot_enabled'");
     const botEnabled = botStatusRes.rows[0]?.value === 'true';
@@ -87,7 +89,8 @@ async function getDashboardData() {
         strategyConfig,
         lastConsultAm: consultAmRes.rows[0]?.value || null,
         lastConsultPm: consultPmRes.rows[0]?.value || null,
-        dailyDrawdown
+        dailyDrawdown,
+        tradablePairs
     };
 }
 
@@ -107,7 +110,8 @@ export default async function DashboardPage() {
         strategyConfig,
         lastConsultAm,
         lastConsultPm,
-        dailyDrawdown
+        dailyDrawdown,
+        tradablePairs
     } = await getDashboardData();
 
     // Use live balance if available, otherwise fallback to DB snapshot
@@ -204,7 +208,7 @@ export default async function DashboardPage() {
                         </div>
                         <div>
                             <p className="text-sm text-muted-foreground">Pairs</p>
-                            <p className="text-lg font-semibold">{strategyConfig.pairs.join(', ')}</p>
+                            <p className="text-lg font-semibold">{tradablePairs.join(', ')}</p>
                         </div>
                         <div>
                             <p className="text-sm text-muted-foreground">Risk</p>
