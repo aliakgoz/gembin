@@ -1,4 +1,4 @@
-import { db } from "./db";
+import { storage } from "./storage";
 import { getStrategyConfig, saveStrategyConfig, StrategyConfig, DEFAULT_CONFIG } from "./strategyConfig";
 import { selectTradablePairs } from "./pairSelection";
 import { calculateTotalBalanceUsdt, getBalance } from "./binance";
@@ -28,13 +28,13 @@ export async function autoTuneStrategy(window: "AM" | "PM" | "ADHOC" = "ADHOC"):
     }
 
     // Gather performance data
-    const [snapshotRes, tradesRes] = await Promise.all([
-        db.query("SELECT * FROM portfolio_snapshots WHERE timestamp > NOW() - INTERVAL '30 days' ORDER BY timestamp ASC"),
-        db.query("SELECT * FROM trades ORDER BY timestamp DESC LIMIT 200"),
+    const [snapshots, trades] = await Promise.all([
+        storage.getSnapshotsSince(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)),
+        storage.getTrades(200),
     ]);
 
-    const snapshots = snapshotRes.rows;
-    const trades = tradesRes.rows;
+    // const snapshots = snapshotRes.rows;
+    // const trades = tradesRes.rows;
 
     const balanceStats = computeBalanceStats(snapshots);
     const tradeStats = computeTradeStats(trades);
@@ -156,10 +156,7 @@ export async function autoTuneStrategy(window: "AM" | "PM" | "ADHOC" = "ADHOC"):
 
         await markConsult(window);
 
-        await db.query(
-            "INSERT INTO logs (level, message, meta) VALUES ($1, $2, $3)",
-            ["info", "Strategy auto-tuned", JSON.stringify({ suggestion: parsed, saved, window })]
-        );
+        storage.addLog("info", "Strategy auto-tuned", JSON.stringify({ suggestion: parsed, saved, window }));
 
         return {
             updated: true,
@@ -170,10 +167,7 @@ export async function autoTuneStrategy(window: "AM" | "PM" | "ADHOC" = "ADHOC"):
             aiSuggestion: parsed,
         };
     } catch (error: any) {
-        await db.query(
-            "INSERT INTO logs (level, message, meta) VALUES ($1, $2, $3)",
-            ["error", "Auto-tune failed", JSON.stringify({ error: error.message, window })]
-        );
+        storage.addLog("error", "Auto-tune failed", JSON.stringify({ error: error.message, window }));
         return {
             updated: false,
             consulted: false,
@@ -264,10 +258,7 @@ function normalizeConfigFromAI(current: StrategyConfig, ai: any): StrategyConfig
 
 async function markConsult(window: "AM" | "PM" | "ADHOC") {
     if (window === "ADHOC") return;
-    await db.query(
-        "INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = CURRENT_TIMESTAMP",
-        [`last_gpt_consult_${window.toLowerCase()}`, new Date().toISOString()]
-    );
+    storage.setSettings(`last_gpt_consult_${window.toLowerCase()}`, new Date().toISOString());
 }
 
 async function fetchNewsDigest() {

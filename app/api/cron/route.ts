@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { binance, getBalance, calculateTotalBalanceUsdt, getTicker } from '@/lib/binance';
 import { analyzeMarket } from '@/lib/strategy';
-import { db } from '@/lib/db';
+import { storage } from '@/lib/storage';
 import { autoTuneStrategy } from '@/lib/autoTune';
 import { getStrategyConfig, StrategyConfig } from '@/lib/strategyConfig';
 import { selectTradablePairs } from '@/lib/pairSelection';
@@ -17,8 +17,7 @@ export async function GET(request: Request) {
 
     try {
         // 1. Check if Bot is Enabled
-        const settingsRes = await db.query("SELECT value FROM settings WHERE key = 'bot_enabled'");
-        const isEnabled = settingsRes.rows[0]?.value === 'true';
+        const isEnabled = storage.getSettings('bot_enabled') === 'true';
 
         if (!isEnabled) {
             console.log('Bot is disabled');
@@ -38,7 +37,7 @@ export async function GET(request: Request) {
         const ddLimit = config.risk.maxDailyDrawdown;
         const dd = await computeDailyDrawdown();
         if (dd !== null && dd <= -ddLimit) {
-            await db.query("INSERT INTO logs (level, message, meta) VALUES ($1, $2, $3)", ['warn', 'Daily drawdown limit hit, skipping trades', JSON.stringify({ dd, limit: ddLimit })]);
+            storage.addLog('warn', 'Daily drawdown limit hit, skipping trades', JSON.stringify({ dd, limit: ddLimit }));
             return NextResponse.json({ message: 'Daily drawdown limit hit, trades paused', dd, limit: ddLimit }, { status: 200 });
         }
 
@@ -67,10 +66,18 @@ export async function GET(request: Request) {
                         // For safety, we'll just log it as a "Paper Trade" for now until verified
                         const order = { id: 'paper_' + Date.now(), symbol, side: 'buy', amount, price: analysis.price, cost: tradeAmountUSDT, status: 'open' };
 
-                        await db.query(
-                            "INSERT INTO trades (symbol, side, amount, price, cost, sl_price, tp_price, strategy, status, order_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
-                            [symbol, 'buy', amount, analysis.price, tradeAmountUSDT, analysis.sl, analysis.tp, 'DynamicTrend', 'open', order.id]
-                        );
+                        storage.addTrade({
+                            symbol,
+                            side: 'buy',
+                            amount,
+                            price: analysis.price,
+                            cost: tradeAmountUSDT,
+                            sl_price: analysis.sl,
+                            tp_price: analysis.tp,
+                            strategy: 'DynamicTrend',
+                            status: 'open',
+                            order_id: order.id
+                        });
                         results.push({ symbol, action: 'BUY', order, analysis });
                     } else {
                         results.push({ symbol, action: 'SKIP', reason: 'Insufficient funds', analysis });
@@ -87,12 +94,18 @@ export async function GET(request: Request) {
                         // const order = await binance.createMarketSellOrder(symbol, assetBalance);
                         const order = { id: 'paper_' + Date.now(), symbol, side: 'sell', amount: assetBalance, price: analysis.price, cost: assetBalance * analysis.price, status: 'closed' };
 
-                        await db.query(
-                            "INSERT INTO trades (symbol, side, amount, price, cost, strategy, status, order_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-                            [symbol, 'sell', assetBalance, analysis.price, assetBalance * analysis.price, 'DynamicTrend', 'closed', order.id]
-                        );
+                        storage.addTrade({
+                            symbol,
+                            side: 'sell',
+                            amount: assetBalance,
+                            price: analysis.price,
+                            cost: assetBalance * analysis.price,
+                            strategy: 'DynamicTrend',
+                            status: 'closed',
+                            order_id: order.id
+                        });
                         // Close any open buy trades for this symbol
-                        await db.query("UPDATE trades SET status = 'closed' WHERE symbol = $1 AND status = 'open'", [symbol]);
+                        storage.updateTradeStatus(symbol, 'closed');
 
                         results.push({ symbol, action: 'SELL', order, analysis });
                     }
@@ -102,7 +115,7 @@ export async function GET(request: Request) {
 
             } catch (e: any) {
                 console.error(`Error processing ${symbol}:`, e);
-                await db.query("INSERT INTO logs (level, message, meta) VALUES ($1, $2, $3)", ['error', `Error processing ${symbol}`, JSON.stringify({ error: e.message })]);
+                storage.addLog('error', `Error processing ${symbol}`, JSON.stringify({ error: e.message }));
             }
         }
 
@@ -110,7 +123,10 @@ export async function GET(request: Request) {
         const totalBalance = await getBalance();
         const { totalUsdt, assets } = await calculateTotalBalanceUsdt(totalBalance);
 
-        await db.query("INSERT INTO portfolio_snapshots (total_balance_usdt, positions) VALUES ($1, $2)", [totalUsdt, JSON.stringify(assets)]);
+        storage.addSnapshot({
+            total_balance_usdt: totalUsdt,
+            positions: JSON.stringify(assets)
+        });
 
         // 5. Auto-tune via ChatGPT using latest metrics (AM/PM windows)
         const advisoryWindow = await pickAdvisoryWindow();
@@ -125,9 +141,9 @@ export async function GET(request: Request) {
 }
 
 async function computeDailyDrawdown(): Promise<number | null> {
-    const res = await db.query("SELECT total_balance_usdt, timestamp FROM portfolio_snapshots WHERE timestamp::date = CURRENT_DATE ORDER BY timestamp ASC");
-    if (!res.rows.length) return null;
-    const balances = res.rows.map((r: any) => Number(r.total_balance_usdt));
+    const snapshots = storage.getSnapshotsSince(new Date(new Date().setHours(0, 0, 0, 0)));
+    if (!snapshots.length) return null;
+    const balances = snapshots.map((r: any) => Number(r.total_balance_usdt));
     const start = balances[0];
     let peak = start;
     let maxDD = 0;
@@ -144,9 +160,8 @@ async function pickAdvisoryWindow(): Promise<"AM" | "PM" | "ADHOC"> {
     const utc3Hour = (now.getUTCHours() + 3) % 24;
     const windowNow = utc3Hour >= 9 && utc3Hour <= 12 ? "AM" : utc3Hour >= 17 && utc3Hour <= 20 ? "PM" : null;
 
-    const res = await db.query("SELECT key, value FROM settings WHERE key IN ('last_gpt_consult_am', 'last_gpt_consult_pm')");
-    const lastAm = res.rows.find((r: any) => r.key === 'last_gpt_consult_am')?.value;
-    const lastPm = res.rows.find((r: any) => r.key === 'last_gpt_consult_pm')?.value;
+    const lastAm = storage.getSettings('last_gpt_consult_am');
+    const lastPm = storage.getSettings('last_gpt_consult_pm');
     const amDone = isSameDay(lastAm);
     const pmDone = isSameDay(lastPm);
 
@@ -157,7 +172,7 @@ async function pickAdvisoryWindow(): Promise<"AM" | "PM" | "ADHOC"> {
     return "ADHOC";
 }
 
-function isSameDay(dateStr?: string) {
+function isSameDay(dateStr?: string | null) {
     if (!dateStr) return false;
     const d = new Date(dateStr);
     if (isNaN(d.getTime())) return false;
@@ -172,8 +187,7 @@ function clamp(value: number, min: number, max: number) {
 }
 
 async function checkOpenPositions(config: StrategyConfig) {
-    const res = await db.query("SELECT * FROM trades WHERE status = 'open'");
-    const openTrades = res.rows;
+    const openTrades = storage.getOpenTrades();
 
     for (const trade of openTrades) {
         try {
@@ -201,15 +215,21 @@ async function checkOpenPositions(config: StrategyConfig) {
                 // await binance.createMarketSellOrder(trade.symbol, amount);
                 const order = { id: 'paper_sl_tp_' + Date.now(), symbol: trade.symbol, side: 'sell', amount, price: currentPrice, cost: amount * currentPrice, status: 'closed' };
 
-                await db.query(
-                    "INSERT INTO trades (symbol, side, amount, price, cost, strategy, status, order_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-                    [trade.symbol, 'sell', amount, currentPrice, amount * currentPrice, 'RiskManager', 'closed', order.id]
-                );
+                storage.addTrade({
+                    symbol: trade.symbol,
+                    side: 'sell',
+                    amount,
+                    price: currentPrice,
+                    cost: amount * currentPrice,
+                    strategy: 'RiskManager',
+                    status: 'closed',
+                    order_id: order.id
+                });
 
                 // Close the original trade
-                await db.query("UPDATE trades SET status = 'closed' WHERE id = $1", [trade.id]);
+                storage.closeTradeById(trade.id);
 
-                await db.query("INSERT INTO logs (level, message, meta) VALUES ($1, $2, $3)", ['info', `Risk Manager: ${reason} for ${trade.symbol}`, JSON.stringify({ trade, currentPrice, reason })]);
+                storage.addLog('info', `Risk Manager: ${reason} for ${trade.symbol}`, JSON.stringify({ trade, currentPrice, reason }));
             }
         } catch (error: any) {
             console.error(`Error checking position for ${trade.symbol}`, error);

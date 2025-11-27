@@ -1,4 +1,4 @@
-import { db } from "@/lib/db";
+import { storage } from "@/lib/storage";
 import { Button } from "@/components/ui/button";
 import { revalidatePath } from "next/cache";
 
@@ -6,17 +6,15 @@ export const dynamic = 'force-dynamic';
 
 async function toggleBot() {
     'use server';
-    const res = await db.query("SELECT value FROM settings WHERE key = 'bot_enabled'");
-    const current = res.rows[0]?.value === 'true';
+    const current = storage.getSettings('bot_enabled') === 'true';
     const newValue = (!current).toString();
 
-    await db.query("INSERT INTO settings (key, value) VALUES ('bot_enabled', $1) ON CONFLICT (key) DO UPDATE SET value = $1", [newValue]);
+    storage.setSettings('bot_enabled', newValue);
     revalidatePath('/settings');
 }
 
 export default async function SettingsPage() {
-    const res = await db.query("SELECT value FROM settings WHERE key = 'bot_enabled'");
-    const isEnabled = res.rows[0]?.value === 'true';
+    const isEnabled = storage.getSettings('bot_enabled') === 'true';
 
     return (
         <div className="flex-1 space-y-4 p-8 pt-6">

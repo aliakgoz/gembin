@@ -1,6 +1,6 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Overview } from "@/components/dashboard/overview";
-import { db } from "@/lib/db";
+import { storage } from "@/lib/storage";
 import { getBalance, calculateTotalBalanceUsdt } from "@/lib/binance";
 import { DollarSign, Activity, CreditCard, TrendingUp, CheckCircle2, XCircle } from "lucide-react";
 import { getStrategyConfig } from "@/lib/strategyConfig";
@@ -24,10 +24,10 @@ async function getDashboardData() {
         liveBalance = totalUsdt;
 
         // 2. Save snapshot to DB
-        await db.query(
-            "INSERT INTO portfolio_snapshots (total_balance_usdt, positions) VALUES ($1, $2)",
-            [totalUsdt, JSON.stringify(balance)]
-        );
+        storage.addSnapshot({
+            total_balance_usdt: totalUsdt,
+            positions: JSON.stringify(balance)
+        });
 
     } catch (error: any) {
         console.error("Failed to fetch live data:", error);
@@ -36,48 +36,38 @@ async function getDashboardData() {
     }
 
     // 3. Fetch history and other data from DB
-    const snapshotRes = await db.query("SELECT * FROM portfolio_snapshots ORDER BY timestamp DESC LIMIT 1");
-    const latestSnapshot = snapshotRes.rows[0] || { total_balance_usdt: 0 };
+    const latestSnapshot = storage.getLatestSnapshot() || { total_balance_usdt: 0 };
 
-    const historyRes = await db.query("SELECT * FROM portfolio_snapshots WHERE timestamp > NOW() - INTERVAL '24 hours' ORDER BY timestamp ASC");
+    const history = storage.getSnapshotsSince(new Date(Date.now() - 24 * 60 * 60 * 1000));
 
-    const tradesRes = await db.query("SELECT * FROM trades ORDER BY timestamp DESC LIMIT 5");
+    const recentTrades = storage.getTrades(5);
 
     // Calculate 24h stats
-    const trades24hRes = await db.query("SELECT count(*) as count FROM trades WHERE timestamp > NOW() - INTERVAL '24 hours'");
-    const trades24h = parseInt(trades24hRes.rows[0].count);
+    const trades24hList = storage.getTradesSince(new Date(Date.now() - 24 * 60 * 60 * 1000));
+    const trades24h = trades24hList.length;
 
     // Calculate Win Rate (all time)
-    const winRateRes = await db.query(`
-        SELECT 
-            count(*) filter (where status = 'closed' and (price * amount) > cost) as wins,
-            count(*) filter (where status = 'closed') as total
-        FROM trades
-    `);
-    const wins = parseInt(winRateRes.rows[0].wins || '0');
-    const totalClosed = parseInt(winRateRes.rows[0].total || '0');
+    const { wins, total: totalClosed } = storage.getWinRateStats();
     const winRate = totalClosed > 0 ? Math.round((wins / totalClosed) * 100) : 0;
 
     const strategyConfig = await getStrategyConfig();
 
-    const pairCountRes = await db.query("SELECT COUNT(DISTINCT symbol) as count FROM trades WHERE timestamp > NOW() - INTERVAL '30 days'");
-    const tradedPairCount = parseInt(pairCountRes.rows[0]?.count || '0');
+    const tradedPairCount = storage.getUniqueTradedPairsCount(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
     const tradablePairs = await selectTradablePairs(strategyConfig);
     const activePairs = tradedPairCount > 0 ? tradedPairCount : tradablePairs.length;
 
-    const botStatusRes = await db.query("SELECT value FROM settings WHERE key = 'bot_enabled'");
-    const botEnabled = botStatusRes.rows[0]?.value === 'true';
+    const botEnabled = storage.getSettings('bot_enabled') === 'true';
 
-    const consultAmRes = await db.query("SELECT value FROM settings WHERE key = 'last_gpt_consult_am'");
-    const consultPmRes = await db.query("SELECT value FROM settings WHERE key = 'last_gpt_consult_pm'");
+    const lastConsultAm = storage.getSettings('last_gpt_consult_am');
+    const lastConsultPm = storage.getSettings('last_gpt_consult_pm');
 
-    const todaySnapshots = await db.query("SELECT total_balance_usdt FROM portfolio_snapshots WHERE timestamp::date = CURRENT_DATE ORDER BY timestamp ASC");
-    const dailyDrawdown = computeDailyDrawdown(todaySnapshots.rows);
+    const todaySnapshots = storage.getSnapshotsSince(new Date(new Date().setHours(0, 0, 0, 0)));
+    const dailyDrawdown = computeDailyDrawdown(todaySnapshots);
 
     return {
         latestSnapshot,
-        history: historyRes.rows,
-        recentTrades: tradesRes.rows,
+        history: history,
+        recentTrades: recentTrades,
         connectionStatus,
         connectionError,
         liveBalance,
@@ -87,8 +77,8 @@ async function getDashboardData() {
         trades24h,
         winRate,
         strategyConfig,
-        lastConsultAm: consultAmRes.rows[0]?.value || null,
-        lastConsultPm: consultPmRes.rows[0]?.value || null,
+        lastConsultAm: lastConsultAm || null,
+        lastConsultPm: lastConsultPm || null,
         dailyDrawdown,
         tradablePairs
     };

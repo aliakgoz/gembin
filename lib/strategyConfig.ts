@@ -1,4 +1,4 @@
-import { db } from "./db";
+import { storage } from "./storage";
 
 export type TimeframeSet = {
     high: string;
@@ -155,17 +155,14 @@ function clampInt(value: any, min: number, max: number) {
 }
 
 export async function getStrategyConfig(): Promise<StrategyConfig> {
-    const res = await db.query("SELECT value FROM settings WHERE key = 'strategy_config'");
-    const raw = res.rows[0]?.value ? safeParse(res.rows[0].value) : null;
+    const value = storage.getSettings('strategy_config');
+    const raw = value ? safeParse(value) : null;
     return mergeConfig(raw);
 }
 
 export async function saveStrategyConfig(config: StrategyConfig) {
     const merged = mergeConfig(config);
-    await db.query(
-        "INSERT INTO settings (key, value) VALUES ('strategy_config', $1) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = CURRENT_TIMESTAMP",
-        [JSON.stringify(merged)]
-    );
+    storage.setSettings('strategy_config', JSON.stringify(merged));
     return merged;
 }
 

@@ -1,4 +1,4 @@
-import { db } from "@/lib/db";
+import { storage } from "@/lib/storage";
 import {
     Table,
     TableBody,
@@ -12,8 +12,7 @@ import { format } from "date-fns";
 export const dynamic = 'force-dynamic';
 
 export default async function TradesPage() {
-    const tradesRes = await db.query("SELECT * FROM trades ORDER BY timestamp DESC LIMIT 100");
-    const trades = tradesRes.rows;
+    const trades = storage.getTrades(100);
 
     return (
         <div className="flex-1 space-y-4 p-8 pt-6">
