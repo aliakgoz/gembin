@@ -49,7 +49,7 @@ export type StrategyConfig = {
 const DEFAULT_CONFIG: StrategyConfig = {
     name: "DynamicTrend",
     pairs: ["BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT"],
-    allocationPerTrade: 0.25,
+    allocationPerTrade: 0.5,
     minTradeUsd: 10,
     timeframe: {
         high: "4h",
@@ -58,10 +58,10 @@ const DEFAULT_CONFIG: StrategyConfig = {
         lookback: 200,
     },
     risk: {
-        maxRiskPerTrade: 0.25,
+        maxRiskPerTrade: 0.5,
         minRiskPerTrade: 0.05,
         maxDailyDrawdown: 0.15,
-        maxOpenPositions: 4,
+        maxOpenPositions: 3,
         maxPairs: 10,
         minTradeUsd: 12,
         slAtrMultiplier: 1.5,

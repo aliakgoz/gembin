@@ -83,7 +83,7 @@ export async function analyzeMarket(symbol: string, config?: StrategyConfig): Pr
 
     const momentumBuy =
         trendScore > 0.6 && // Strong trend
-        lowTf.rsi < 70 && // Not extremely overbought
+        lowTf.rsi < 85 && // Allow buying even if overbought (was 70)
         confidence > cfg.regime.confidenceFloor;
 
     const sellSignal =
