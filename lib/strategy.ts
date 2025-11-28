@@ -81,6 +81,11 @@ export async function analyzeMarket(symbol: string, config?: StrategyConfig): Pr
         trendScore > cfg.regime.trendThresh &&
         confidence > cfg.regime.confidenceFloor;
 
+    const momentumBuy =
+        trendScore > 0.6 && // Strong trend
+        lowTf.rsi < 70 && // Not extremely overbought
+        confidence > cfg.regime.confidenceFloor;
+
     const sellSignal =
         lowTf.rsi > cfg.indicators.rsiSell &&
         // lowTf.macdHist < 0 && // Removed strict MACD check
@@ -88,7 +93,7 @@ export async function analyzeMarket(symbol: string, config?: StrategyConfig): Pr
         trendScore < -cfg.regime.trendThresh &&
         confidence > cfg.regime.confidenceFloor;
 
-    if (buySignal) {
+    if (buySignal || momentumBuy) {
         const atr = lowTf.last * lowTf.atrPct;
         const sl = price - (atr * cfg.risk.slAtrMultiplier);
         const tp = price + (atr * cfg.risk.tpAtrMultiplier);
@@ -96,7 +101,7 @@ export async function analyzeMarket(symbol: string, config?: StrategyConfig): Pr
         return {
             action: 'BUY',
             symbol,
-            reason: `MTF Bullish | RSI ${lowTf.rsi.toFixed(1)} Stoch ${lowTf.stochK.toFixed(1)} MACD ${lowTf.macdHist.toFixed(4)}`,
+            reason: momentumBuy ? `Momentum Buy | Trend ${trendScore.toFixed(2)}` : `MTF Bullish | RSI ${lowTf.rsi.toFixed(1)} Stoch ${lowTf.stochK.toFixed(1)} MACD ${lowTf.macdHist.toFixed(4)}`,
             price,
             confidence,
             regime,

@@ -79,8 +79,8 @@ const DEFAULT_CONFIG: StrategyConfig = {
         macdSignal: 9,
     },
     regime: {
-        volLow: 0.5,
-        volHigh: 2.5,
+        volLow: 0.01,
+        volHigh: 0.05,
         trendThresh: 0.3,
         confidenceFloor: 0.2,
     },
@@ -136,7 +136,7 @@ function mergeConfig(raw: any): StrategyConfig {
     merged.indicators.macdSlow = clampInt(merged.indicators.macdSlow, 10, 100);
     merged.indicators.macdSignal = clampInt(merged.indicators.macdSignal, 2, 30);
 
-    merged.regime.volLow = clamp(merged.regime.volLow, 0.1, 5.0);
+    merged.regime.volLow = clamp(merged.regime.volLow, 0.001, 5.0);
     merged.regime.volHigh = clamp(merged.regime.volHigh, merged.regime.volLow, 10.0);
     merged.regime.trendThresh = clamp(merged.regime.trendThresh, 0.1, 1.0);
     merged.regime.confidenceFloor = clamp(merged.regime.confidenceFloor, 0.1, 0.9);
