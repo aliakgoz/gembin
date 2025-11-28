@@ -1,19 +1,7 @@
 import { storage } from "@/lib/storage";
-import { Button } from "@/components/ui/button";
 import { revalidatePath } from "next/cache";
 
 export const dynamic = 'force-dynamic';
-
-async function toggleBot() {
-    'use server';
-    const current = (await storage.getSettings('bot_enabled')) === 'true';
-    const newValue = (!current).toString();
-    const newExpectedStatus = !current ? 'running' : 'stopped';
-
-    await storage.setSettings('bot_enabled', newValue);
-    await storage.setSettings('expected_status', newExpectedStatus);
-    revalidatePath('/settings');
-}
 
 export default async function SettingsPage() {
     const isEnabled = (await storage.getSettings('bot_enabled')) === 'true';
@@ -30,15 +18,9 @@ export default async function SettingsPage() {
                 <div className="flex items-center space-x-4">
                     <div className={`h-3 w-3 rounded-full ${isEnabled ? 'bg-green-500' : 'bg-red-500'}`} />
                     <span>{isEnabled ? 'Running' : 'Stopped'}</span>
-
-                    <form action={toggleBot}>
-                        <Button variant={isEnabled ? "destructive" : "default"}>
-                            {isEnabled ? 'Stop Bot' : 'Start Bot'}
-                        </Button>
-                    </form>
                 </div>
                 <p className="text-sm text-muted-foreground mt-2">
-                    Controls the Vercel Cron execution. If stopped, the cron job will skip execution.
+                    The bot is designed to run continuously.
                 </p>
                 {lastHeartbeat && (
                     <p className="text-xs text-muted-foreground mt-1">
