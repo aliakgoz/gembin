@@ -62,16 +62,24 @@ export async function GET(request: Request) {
                     if (tradeAmountUSDT > config.minTradeUsd) { // Min trade size guard
                         const amount = tradeAmountUSDT / analysis.price;
                         // Execute Market Buy
-                        // const order = await binance.createMarketBuyOrder(symbol, amount);
-                        // For safety, we'll just log it as a "Paper Trade" for now until verified
-                        const order = { id: 'paper_' + Date.now(), symbol, side: 'buy', amount, price: analysis.price, cost: tradeAmountUSDT, status: 'open' };
+                        const binanceOrder = await binance.createMarketBuyOrder(symbol, amount);
+
+                        const order = {
+                            id: binanceOrder.id,
+                            symbol,
+                            side: 'buy' as const,
+                            amount: binanceOrder.amount,
+                            price: binanceOrder.price || analysis.price, // Fallback to analysis price if fill price is missing
+                            cost: binanceOrder.cost,
+                            status: 'open' as const
+                        };
 
                         await storage.addTrade({
                             symbol,
                             side: 'buy',
-                            amount,
-                            price: analysis.price,
-                            cost: tradeAmountUSDT,
+                            amount: order.amount,
+                            price: order.price,
+                            cost: order.cost,
                             sl_price: analysis.sl,
                             tp_price: analysis.tp,
                             strategy: 'DynamicTrend',
@@ -91,15 +99,24 @@ export async function GET(request: Request) {
 
                     if (assetBalance * analysis.price > config.minTradeUsd) {
                         // Execute Market Sell (Sell all)
-                        // const order = await binance.createMarketSellOrder(symbol, assetBalance);
-                        const order = { id: 'paper_' + Date.now(), symbol, side: 'sell', amount: assetBalance, price: analysis.price, cost: assetBalance * analysis.price, status: 'closed' };
+                        const binanceOrder = await binance.createMarketSellOrder(symbol, assetBalance);
+
+                        const order = {
+                            id: binanceOrder.id,
+                            symbol,
+                            side: 'sell' as const,
+                            amount: binanceOrder.amount,
+                            price: binanceOrder.price || analysis.price,
+                            cost: binanceOrder.cost,
+                            status: 'closed' as const
+                        };
 
                         await storage.addTrade({
                             symbol,
                             side: 'sell',
-                            amount: assetBalance,
-                            price: analysis.price,
-                            cost: assetBalance * analysis.price,
+                            amount: order.amount,
+                            price: order.price,
+                            cost: order.cost,
                             strategy: 'DynamicTrend',
                             status: 'closed',
                             order_id: order.id
@@ -212,15 +229,24 @@ async function checkOpenPositions(config: StrategyConfig) {
             if (action === 'sell') {
                 const amount = Number(trade.amount);
                 // Execute Sell
-                // await binance.createMarketSellOrder(trade.symbol, amount);
-                const order = { id: 'paper_sl_tp_' + Date.now(), symbol: trade.symbol, side: 'sell', amount, price: currentPrice, cost: amount * currentPrice, status: 'closed' };
+                const binanceOrder = await binance.createMarketSellOrder(trade.symbol, amount);
+
+                const order = {
+                    id: binanceOrder.id,
+                    symbol: trade.symbol,
+                    side: 'sell' as const,
+                    amount: binanceOrder.amount,
+                    price: binanceOrder.price || currentPrice,
+                    cost: binanceOrder.cost,
+                    status: 'closed' as const
+                };
 
                 await storage.addTrade({
                     symbol: trade.symbol,
                     side: 'sell',
-                    amount,
-                    price: currentPrice,
-                    cost: amount * currentPrice,
+                    amount: order.amount,
+                    price: order.price,
+                    cost: order.cost,
                     strategy: 'RiskManager',
                     status: 'closed',
                     order_id: order.id
