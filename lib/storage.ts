@@ -25,7 +25,9 @@ export type Trade = {
 };
 
 export type Settings = {
-    [key: string]: string;
+    expected_status?: 'running' | 'stopped';
+    last_heartbeat?: string;
+    [key: string]: string | undefined;
 };
 
 export type Snapshot = {
@@ -187,6 +189,17 @@ export const storage = {
         const data = await getData();
         data.settings[key] = value;
         await saveData(data);
+    },
+
+    updateHeartbeat: async () => {
+        const data = await getData();
+        data.settings.last_heartbeat = new Date().toISOString();
+        await saveData(data);
+    },
+
+    getHeartbeat: async (): Promise<string | null> => {
+        const data = await getData();
+        return data.settings.last_heartbeat || null;
     },
 
     getLatestSnapshot: async (): Promise<Snapshot | null> => {

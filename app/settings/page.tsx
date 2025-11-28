@@ -8,13 +8,16 @@ async function toggleBot() {
     'use server';
     const current = (await storage.getSettings('bot_enabled')) === 'true';
     const newValue = (!current).toString();
+    const newExpectedStatus = !current ? 'running' : 'stopped';
 
     await storage.setSettings('bot_enabled', newValue);
+    await storage.setSettings('expected_status', newExpectedStatus);
     revalidatePath('/settings');
 }
 
 export default async function SettingsPage() {
     const isEnabled = (await storage.getSettings('bot_enabled')) === 'true';
+    const lastHeartbeat = await storage.getHeartbeat();
 
     return (
         <div className="flex-1 space-y-4 p-8 pt-6">
@@ -37,6 +40,11 @@ export default async function SettingsPage() {
                 <p className="text-sm text-muted-foreground mt-2">
                     Controls the Vercel Cron execution. If stopped, the cron job will skip execution.
                 </p>
+                {lastHeartbeat && (
+                    <p className="text-xs text-muted-foreground mt-1">
+                        Last Run: {new Date(lastHeartbeat).toLocaleString()}
+                    </p>
+                )}
             </div>
         </div>
     );

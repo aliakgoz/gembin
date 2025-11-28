@@ -15,170 +15,199 @@ export async function GET(request: Request) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    // Timeout Protection: Ensure we respond within 55s (Vercel limit is 60s)
+    const TIMEOUT_MS = 55000;
+    const timeoutPromise = new Promise<Response>((_, reject) =>
+        setTimeout(() => reject(new Error('Execution Timeout')), TIMEOUT_MS)
+    );
+
     try {
-        // 1. Check if Bot is Enabled
-        const isEnabled = (await storage.getSettings('bot_enabled')) === 'true';
-        if (!isEnabled) return NextResponse.json({ message: 'Bot is disabled' });
+        const logicPromise = (async () => {
+            // 0. Heartbeat & Self-Healing
+            await storage.updateHeartbeat();
 
-        // 2. Load Config & State
-        const config = await getStrategyConfig();
-        const pairs = await selectTradablePairs(config);
+            let isEnabled = (await storage.getSettings('bot_enabled')) === 'true';
+            const expectedStatus = (await storage.getSettings('expected_status')) || 'running'; // Default to running if not set
 
-        // 3. Get Portfolio State
-        const balance = await getBalance();
-        const { totalUsdt, assets } = await calculateTotalBalanceUsdt(balance);
-        let currentUsdt = Number((balance as any)?.total?.USDT ?? (balance as any)?.free?.USDT ?? 0);
-
-        // Daily Drawdown Check
-        const ddLimit = config.risk.maxDailyDrawdown;
-        const dd = await computeDailyDrawdown();
-        if (dd !== null && dd <= -ddLimit) {
-            await storage.addLog('warn', 'Daily drawdown limit hit', JSON.stringify({ dd, limit: ddLimit }));
-            return NextResponse.json({ message: 'Daily drawdown limit hit', dd });
-        }
-
-        // 4. Safety Check: Manage Open Positions (SL/TP)
-        // This runs first to protect capital
-        await checkOpenPositions(config);
-
-        // 5. Pass 1: Analyze All Pairs
-        const analysisMap = new Map<string, StrategyResult>();
-        const buySignals: StrategyResult[] = [];
-        const sellSignals: StrategyResult[] = [];
-
-        for (const symbol of pairs) {
-            try {
-                const analysis = await analyzeMarket(symbol, config);
-                analysisMap.set(symbol, analysis);
-
-                if (analysis.action === 'BUY') {
-                    buySignals.push(analysis);
-                } else if (analysis.action === 'SELL') {
-                    sellSignals.push(analysis);
-                }
-            } catch (e: any) {
-                console.error(`Error analyzing ${symbol}:`, e);
+            // Self-Healing: If stopped but expected to run, restart.
+            if (!isEnabled && expectedStatus === 'running') {
+                console.log("Self-Healing: Bot found stopped but expected to be running. Restarting...");
+                await storage.setSettings('bot_enabled', 'true');
+                await storage.addLog('info', 'Self-Healing: Bot restarted automatically.');
+                isEnabled = true;
             }
-        }
 
-        const results = [];
+            if (!isEnabled) return NextResponse.json({ message: 'Bot is disabled' });
 
-        // 6. Pass 2: Execution
+            // 1. Load Config & State
+            const config = await getStrategyConfig();
+            const pairs = await selectTradablePairs(config);
 
-        // Step A: Execute SELL signals first to free up capital
-        for (const analysis of sellSignals) {
-            const baseAsset = analysis.symbol.split('/')[0];
-            const assetData = assets.find(a => a.asset === baseAsset);
+            // 2. Get Portfolio State
+            const balance = await getBalance();
+            const { totalUsdt, assets } = await calculateTotalBalanceUsdt(balance);
+            let currentUsdt = Number((balance as any)?.total?.USDT ?? (balance as any)?.free?.USDT ?? 0);
 
-            if (assetData && assetData.usdtValue > config.minTradeUsd) {
+            // Daily Drawdown Check
+            const ddLimit = config.risk.maxDailyDrawdown;
+            const dd = await computeDailyDrawdown();
+            if (dd !== null && dd <= -ddLimit) {
+                await storage.addLog('warn', 'Daily drawdown limit hit', JSON.stringify({ dd, limit: ddLimit }));
+                return NextResponse.json({ message: 'Daily drawdown limit hit', dd });
+            }
+
+            // 3. Safety Check: Manage Open Positions (SL/TP)
+            // This runs first to protect capital
+            await checkOpenPositions(config);
+
+            // 4. Pass 1: Analyze All Pairs
+            const analysisMap = new Map<string, StrategyResult>();
+            const buySignals: StrategyResult[] = [];
+            const sellSignals: StrategyResult[] = [];
+
+            for (const symbol of pairs) {
                 try {
-                    const order = await executeSell(analysis.symbol, assetData.amount, analysis.price, 'DynamicTrend');
-                    currentUsdt += order.cost; // Update available USDT
-                    results.push({ symbol: analysis.symbol, action: 'SELL', order });
+                    const analysis = await analyzeMarket(symbol, config);
+                    analysisMap.set(symbol, analysis);
+
+                    if (analysis.action === 'BUY') {
+                        buySignals.push(analysis);
+                    } else if (analysis.action === 'SELL') {
+                        sellSignals.push(analysis);
+                    }
                 } catch (e: any) {
-                    results.push({ symbol: analysis.symbol, action: 'FAIL_SELL', error: e.message });
+                    console.error(`Error analyzing ${symbol}:`, e);
                 }
             }
-        }
 
-        // Step B: Execute BUY signals with Rebalancing
-        // Sort buys by confidence (highest first)
-        buySignals.sort((a, b) => b.confidence - a.confidence);
+            const results = [];
 
-        for (const analysis of buySignals) {
-            // Calculate target position size based on TOTAL Portfolio Value (not just free USDT)
-            const targetSize = totalUsdt * config.allocationPerTrade;
+            // 5. Pass 2: Execution
 
-            // Check if we already hold this asset
-            const baseAsset = analysis.symbol.split('/')[0];
-            const currentPosition = assets.find(a => a.asset === baseAsset);
-            const currentVal = currentPosition ? currentPosition.usdtValue : 0;
+            // Step A: Execute SELL signals first to free up capital
+            for (const analysis of sellSignals) {
+                const baseAsset = analysis.symbol.split('/')[0];
+                const assetData = assets.find(a => a.asset === baseAsset);
 
-            // If we already have enough, skip
-            if (currentVal >= targetSize * 0.9) {
-                results.push({ symbol: analysis.symbol, action: 'HOLD', reason: 'Already at target allocation' });
-                continue;
-            }
-
-            let neededUsdt = targetSize - currentVal;
-            // Clamp to max risk per trade if needed, though allocationPerTrade usually handles this
-
-            if (neededUsdt < config.minTradeUsd) continue;
-
-            // If we don't have enough USDT, try to liquidate weak positions
-            if (currentUsdt < neededUsdt) {
-                // Find funding candidates: Assets we hold that are NOT in buySignals
-                // and have low confidence or HOLD signal
-                const candidates = assets.filter(a => {
-                    if (a.asset === 'USDT') return false;
-                    const sym = `${a.asset}/USDT`;
-                    // Don't sell what we are trying to buy
-                    if (sym === analysis.symbol) return false;
-                    // Don't sell other strong buys
-                    if (buySignals.find(b => b.symbol === sym)) return false;
-                    return true;
-                });
-
-                // Sort candidates by confidence (lowest first) to sell junk first
-                // We need analysis for these assets. If not in 'pairs', we might not have analysis.
-                // For now, assume we only trade pairs in our list.
-                const scoredCandidates = candidates.map(c => {
-                    const sym = `${c.asset}/USDT`;
-                    const anal = analysisMap.get(sym);
-                    return {
-                        asset: c,
-                        confidence: anal ? anal.confidence : 0,
-                        symbol: sym
-                    };
-                }).sort((a, b) => a.confidence - b.confidence);
-
-                for (const cand of scoredCandidates) {
-                    if (currentUsdt >= neededUsdt) break; // We have enough now
-
-                    if (cand.asset.usdtValue > config.minTradeUsd) {
-                        try {
-                            // Sell this asset to fund the buy
-                            const order = await executeSell(cand.symbol, cand.asset.amount, 0, 'Rebalance'); // 0 price = market
-                            currentUsdt += order.cost;
-                            results.push({ symbol: cand.symbol, action: 'LIQUIDATE', target: analysis.symbol, order });
-                        } catch (e) {
-                            console.error(`Failed to liquidate ${cand.symbol}`, e);
-                        }
+                if (assetData && assetData.usdtValue > config.minTradeUsd) {
+                    try {
+                        const order = await executeSell(analysis.symbol, assetData.amount, analysis.price, 'DynamicTrend');
+                        currentUsdt += order.cost; // Update available USDT
+                        results.push({ symbol: analysis.symbol, action: 'SELL', order });
+                    } catch (e: any) {
+                        results.push({ symbol: analysis.symbol, action: 'FAIL_SELL', error: e.message });
                     }
                 }
             }
 
-            // Now check if we can buy
-            // Use available USDT, capped by needed amount
-            const amountToInvest = Math.min(currentUsdt, neededUsdt);
+            // Step B: Execute BUY signals with Rebalancing
+            // Sort buys by confidence (highest first)
+            buySignals.sort((a, b) => b.confidence - a.confidence);
 
-            if (amountToInvest > config.minTradeUsd) {
-                try {
-                    const amount = amountToInvest / analysis.price;
-                    const order = await executeBuy(analysis.symbol, amount, analysis.price, analysis.sl, analysis.tp, 'DynamicTrend');
-                    currentUsdt -= order.cost;
-                    results.push({ symbol: analysis.symbol, action: 'BUY', order });
-                } catch (e: any) {
-                    results.push({ symbol: analysis.symbol, action: 'FAIL_BUY', error: e.message });
+            for (const analysis of buySignals) {
+                // Calculate target position size based on TOTAL Portfolio Value (not just free USDT)
+                const targetSize = totalUsdt * config.allocationPerTrade;
+
+                // Check if we already hold this asset
+                const baseAsset = analysis.symbol.split('/')[0];
+                const currentPosition = assets.find(a => a.asset === baseAsset);
+                const currentVal = currentPosition ? currentPosition.usdtValue : 0;
+
+                // If we already have enough, skip
+                if (currentVal >= targetSize * 0.9) {
+                    results.push({ symbol: analysis.symbol, action: 'HOLD', reason: 'Already at target allocation' });
+                    continue;
                 }
-            } else {
-                results.push({ symbol: analysis.symbol, action: 'SKIP', reason: 'Insufficient funds after rebalance' });
+
+                let neededUsdt = targetSize - currentVal;
+                // Clamp to max risk per trade if needed, though allocationPerTrade usually handles this
+
+                if (neededUsdt < config.minTradeUsd) continue;
+
+                // If we don't have enough USDT, try to liquidate weak positions
+                if (currentUsdt < neededUsdt) {
+                    // Find funding candidates: Assets we hold that are NOT in buySignals
+                    // and have low confidence or HOLD signal
+                    const candidates = assets.filter(a => {
+                        if (a.asset === 'USDT') return false;
+                        const sym = `${a.asset}/USDT`;
+                        // Don't sell what we are trying to buy
+                        if (sym === analysis.symbol) return false;
+                        // Don't sell other strong buys
+                        if (buySignals.find(b => b.symbol === sym)) return false;
+                        return true;
+                    });
+
+                    // Sort candidates by confidence (lowest first) to sell junk first
+                    // We need analysis for these assets. If not in 'pairs', we might not have analysis.
+                    // For now, assume we only trade pairs in our list.
+                    const scoredCandidates = candidates.map(c => {
+                        const sym = `${c.asset}/USDT`;
+                        const anal = analysisMap.get(sym);
+                        return {
+                            asset: c,
+                            confidence: anal ? anal.confidence : 0,
+                            symbol: sym
+                        };
+                    }).sort((a, b) => a.confidence - b.confidence);
+
+                    for (const cand of scoredCandidates) {
+                        if (currentUsdt >= neededUsdt) break; // We have enough now
+
+                        if (cand.asset.usdtValue > config.minTradeUsd) {
+                            try {
+                                // Sell this asset to fund the buy
+                                const order = await executeSell(cand.symbol, cand.asset.amount, 0, 'Rebalance'); // 0 price = market
+                                currentUsdt += order.cost;
+                                results.push({ symbol: cand.symbol, action: 'LIQUIDATE', target: analysis.symbol, order });
+                            } catch (e) {
+                                console.error(`Failed to liquidate ${cand.symbol}`, e);
+                            }
+                        }
+                    }
+                }
+
+                // Now check if we can buy
+                // Use available USDT, capped by needed amount
+                const amountToInvest = Math.min(currentUsdt, neededUsdt);
+
+                if (amountToInvest > config.minTradeUsd) {
+                    try {
+                        const amount = amountToInvest / analysis.price;
+                        const order = await executeBuy(analysis.symbol, amount, analysis.price, analysis.sl, analysis.tp, 'DynamicTrend');
+                        currentUsdt -= order.cost;
+                        results.push({ symbol: analysis.symbol, action: 'BUY', order });
+                    } catch (e: any) {
+                        results.push({ symbol: analysis.symbol, action: 'FAIL_BUY', error: e.message });
+                    }
+                } else {
+                    results.push({ symbol: analysis.symbol, action: 'SKIP', reason: 'Insufficient funds after rebalance' });
+                }
             }
-        }
 
-        // 7. Snapshot & Auto-Tune
-        await storage.addSnapshot({
-            total_balance_usdt: totalUsdt,
-            positions: JSON.stringify(assets)
-        });
+            // 6. Snapshot & Auto-Tune
+            await storage.addSnapshot({
+                total_balance_usdt: totalUsdt,
+                positions: JSON.stringify(assets)
+            });
 
-        const advisoryWindow = await pickAdvisoryWindow();
-        const tuneResult = await autoTuneStrategy(advisoryWindow);
+            const advisoryWindow = await pickAdvisoryWindow();
+            const tuneResult = await autoTuneStrategy(advisoryWindow);
 
-        return NextResponse.json({ success: true, results, tuneResult });
+            // Update heartbeat again at the end
+            await storage.updateHeartbeat();
+
+            return NextResponse.json({ success: true, results, tuneResult });
+        })();
+
+        // Race against timeout
+        return await Promise.race([logicPromise, timeoutPromise]) as NextResponse;
 
     } catch (error: any) {
         console.error('Cron failed:', error);
+        // Try to log the error to storage if possible
+        try { await storage.addLog('error', 'Cron execution failed', error.message); } catch { }
+
         return NextResponse.json({ error: error.message }, { status: 500 });
     }
 }
