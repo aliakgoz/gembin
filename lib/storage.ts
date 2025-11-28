@@ -1,12 +1,13 @@
 import fs from 'fs';
 import path from 'path';
-import { kv } from '@vercel/kv';
+import { put, list } from '@vercel/blob';
 
 const DATA_DIR = path.join(process.cwd(), 'data');
 const DATA_FILE = path.join(DATA_DIR, 'storage.json');
+const BLOB_FILENAME = 'storage.json';
 
-// Check if we are in an environment with Vercel KV configured
-const USE_KV = !!process.env.KV_REST_API_URL;
+// Check if we are in an environment with Vercel Blob configured
+const USE_BLOB = !!process.env.BLOB_READ_WRITE_TOKEN;
 
 export type Trade = {
     id: string;
@@ -57,7 +58,7 @@ function readDataLocal(): StorageData {
         const content = fs.readFileSync(DATA_FILE, 'utf-8');
         return JSON.parse(content);
     } catch (error) {
-        console.warn("Failed to read local storage (expected on Vercel if KV not set up):", error);
+        console.warn("Failed to read local storage:", error);
         return { trades: [], settings: {}, portfolio_snapshots: [], logs: [] };
     }
 }
@@ -69,242 +70,182 @@ function writeDataLocal(data: StorageData) {
         }
         fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
     } catch (error) {
-        // On Vercel, writing to filesystem will fail. We catch this to prevent app crash.
-        // The user should set up Vercel KV to fix persistence.
-        console.warn("Failed to write to local storage (expected on Vercel if KV not set up):", error);
+        console.warn("Failed to write local storage:", error);
     }
 }
 
-// --- KV Helper Functions ---
+// --- Blob Helper Functions ---
 
-async function getKVData(): Promise<StorageData> {
+async function readDataBlob(): Promise<StorageData> {
     try {
-        const [trades, settings, snapshots, logs] = await Promise.all([
-            kv.get<Trade[]>('trades'),
-            kv.get<Settings>('settings'),
-            kv.get<Snapshot[]>('portfolio_snapshots'),
-            kv.get<Log[]>('logs')
-        ]);
-        return {
-            trades: trades || [],
-            settings: settings || {},
-            portfolio_snapshots: snapshots || [],
-            logs: logs || []
-        };
+        // 1. List blobs to find our file
+        const { blobs } = await list({ prefix: BLOB_FILENAME, limit: 1 });
+        const blob = blobs.find(b => b.pathname === BLOB_FILENAME);
+
+        if (!blob) {
+            return { trades: [], settings: {}, portfolio_snapshots: [], logs: [] };
+        }
+
+        // 2. Fetch the content
+        const response = await fetch(blob.url);
+        if (!response.ok) throw new Error('Failed to fetch blob');
+        return await response.json();
+
     } catch (error) {
-        console.error("Failed to read from KV:", error);
+        console.error("Failed to read from Blob:", error);
         return { trades: [], settings: {}, portfolio_snapshots: [], logs: [] };
+    }
+}
+
+async function writeDataBlob(data: StorageData) {
+    try {
+        // Overwrite the file. addRandomSuffix: false ensures we keep the same filename.
+        await put(BLOB_FILENAME, JSON.stringify(data), {
+            access: 'public',
+            addRandomSuffix: false
+        });
+    } catch (error) {
+        console.error("Failed to write to Blob:", error);
     }
 }
 
 // --- Unified Storage Interface ---
 
+// Helper to get data from the correct source
+async function getData(): Promise<StorageData> {
+    if (USE_BLOB) {
+        return await readDataBlob();
+    } else {
+        return readDataLocal();
+    }
+}
+
+// Helper to save data to the correct source
+async function saveData(data: StorageData) {
+    if (USE_BLOB) {
+        await writeDataBlob(data);
+    } else {
+        writeDataLocal(data);
+    }
+}
+
 export const storage = {
-    // --- Trades ---
     getTrades: async (limit?: number): Promise<Trade[]> => {
-        let trades: Trade[] = [];
-        if (USE_KV) {
-            trades = (await kv.get<Trade[]>('trades')) || [];
-        } else {
-            trades = readDataLocal().trades;
-        }
-        trades.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+        const data = await getData();
+        let trades = data.trades.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
         if (limit) trades = trades.slice(0, limit);
         return trades;
     },
 
     getOpenTrades: async (): Promise<Trade[]> => {
-        let trades: Trade[] = [];
-        if (USE_KV) {
-            trades = (await kv.get<Trade[]>('trades')) || [];
-        } else {
-            trades = readDataLocal().trades;
-        }
-        return trades.filter(t => t.status === 'open');
+        const data = await getData();
+        return data.trades.filter(t => t.status === 'open');
     },
 
     addTrade: async (trade: Omit<Trade, 'id' | 'timestamp'>) => {
+        const data = await getData();
         const newTrade: Trade = {
             ...trade,
             id: Math.random().toString(36).substring(2, 9),
             timestamp: new Date().toISOString()
         };
-
-        if (USE_KV) {
-            const trades = (await kv.get<Trade[]>('trades')) || [];
-            trades.push(newTrade);
-            await kv.set('trades', trades);
-        } else {
-            const data = readDataLocal();
-            data.trades.push(newTrade);
-            writeDataLocal(data);
-        }
+        data.trades.push(newTrade);
+        await saveData(data);
         return newTrade;
     },
 
     updateTradeStatus: async (symbol: string, status: 'open' | 'closed') => {
-        if (USE_KV) {
-            const trades = (await kv.get<Trade[]>('trades')) || [];
-            let updated = false;
-            trades.forEach(t => {
-                if (t.symbol === symbol && t.status === 'open') {
-                    t.status = status;
-                    updated = true;
-                }
-            });
-            if (updated) await kv.set('trades', trades);
-        } else {
-            const data = readDataLocal();
-            let updated = false;
-            data.trades.forEach(t => {
-                if (t.symbol === symbol && t.status === 'open') {
-                    t.status = status;
-                    updated = true;
-                }
-            });
-            if (updated) writeDataLocal(data);
-        }
+        const data = await getData();
+        let updated = false;
+        data.trades.forEach(t => {
+            if (t.symbol === symbol && t.status === 'open') {
+                t.status = status;
+                updated = true;
+            }
+        });
+        if (updated) await saveData(data);
     },
 
     closeTradeById: async (id: string) => {
-        if (USE_KV) {
-            const trades = (await kv.get<Trade[]>('trades')) || [];
-            const trade = trades.find(t => t.id === id);
-            if (trade) {
-                trade.status = 'closed';
-                await kv.set('trades', trades);
-            }
-        } else {
-            const data = readDataLocal();
-            const trade = data.trades.find(t => t.id === id);
-            if (trade) {
-                trade.status = 'closed';
-                writeDataLocal(data);
-            }
+        const data = await getData();
+        const trade = data.trades.find(t => t.id === id);
+        if (trade) {
+            trade.status = 'closed';
+            await saveData(data);
         }
     },
 
-    // --- Settings ---
     getSettings: async (key: string): Promise<string | null> => {
-        if (USE_KV) {
-            const settings = (await kv.get<Settings>('settings')) || {};
-            return settings[key] || null;
-        } else {
-            return readDataLocal().settings[key] || null;
-        }
+        const data = await getData();
+        return data.settings[key] || null;
     },
 
     setSettings: async (key: string, value: string) => {
-        if (USE_KV) {
-            const settings = (await kv.get<Settings>('settings')) || {};
-            settings[key] = value;
-            await kv.set('settings', settings);
-        } else {
-            const data = readDataLocal();
-            data.settings[key] = value;
-            writeDataLocal(data);
-        }
+        const data = await getData();
+        data.settings[key] = value;
+        await saveData(data);
     },
 
-    // --- Snapshots ---
     getLatestSnapshot: async (): Promise<Snapshot | null> => {
-        let snapshots: Snapshot[] = [];
-        if (USE_KV) {
-            snapshots = (await kv.get<Snapshot[]>('portfolio_snapshots')) || [];
-        } else {
-            snapshots = readDataLocal().portfolio_snapshots;
-        }
-        if (snapshots.length === 0) return null;
-        return snapshots.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
+        const data = await getData();
+        if (data.portfolio_snapshots.length === 0) return null;
+        return data.portfolio_snapshots.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
     },
 
     getSnapshots: async (limit?: number) => {
-        let snapshots: Snapshot[] = [];
-        if (USE_KV) {
-            snapshots = (await kv.get<Snapshot[]>('portfolio_snapshots')) || [];
-        } else {
-            snapshots = readDataLocal().portfolio_snapshots;
-        }
-        snapshots.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+        const data = await getData();
+        let snapshots = data.portfolio_snapshots.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
         if (limit) snapshots = snapshots.slice(0, limit);
         return snapshots;
     },
 
     getSnapshotsSince: async (since: Date) => {
-        let snapshots: Snapshot[] = [];
-        if (USE_KV) {
-            snapshots = (await kv.get<Snapshot[]>('portfolio_snapshots')) || [];
-        } else {
-            snapshots = readDataLocal().portfolio_snapshots;
-        }
-        return snapshots.filter(s => new Date(s.timestamp) > since).sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+        const data = await getData();
+        return data.portfolio_snapshots.filter(s => new Date(s.timestamp) > since).sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
     },
 
     addSnapshot: async (snapshot: Omit<Snapshot, 'timestamp'>) => {
+        const data = await getData();
         const newSnapshot = { ...snapshot, timestamp: new Date().toISOString() };
-        if (USE_KV) {
-            const snapshots = (await kv.get<Snapshot[]>('portfolio_snapshots')) || [];
-            snapshots.push(newSnapshot);
-            // Optional: Limit size in KV to prevent infinite growth
-            if (snapshots.length > 1000) snapshots.shift();
-            await kv.set('portfolio_snapshots', snapshots);
-        } else {
-            const data = readDataLocal();
-            data.portfolio_snapshots.push(newSnapshot);
-            writeDataLocal(data);
+        data.portfolio_snapshots.push(newSnapshot);
+
+        // Limit snapshots to save bandwidth/storage
+        if (data.portfolio_snapshots.length > 500) {
+            data.portfolio_snapshots = data.portfolio_snapshots.slice(-500);
         }
+
+        await saveData(data);
     },
 
-    // --- Logs ---
     addLog: async (level: string, message: string, meta?: string) => {
+        const data = await getData();
         const newLog = { level, message, meta, timestamp: new Date().toISOString() };
-        if (USE_KV) {
-            const logs = (await kv.get<Log[]>('logs')) || [];
-            logs.push(newLog);
-            if (logs.length > 1000) logs.splice(0, logs.length - 1000);
-            await kv.set('logs', logs);
-        } else {
-            const data = readDataLocal();
-            data.logs.push(newLog);
-            if (data.logs.length > 1000) {
-                data.logs = data.logs.slice(-1000);
-            }
-            writeDataLocal(data);
+        data.logs.push(newLog);
+
+        // Keep logs size manageable
+        if (data.logs.length > 200) {
+            data.logs = data.logs.slice(-200);
         }
+
+        await saveData(data);
     },
 
-    // --- Helpers ---
     getTradesSince: async (since: Date) => {
-        let trades: Trade[] = [];
-        if (USE_KV) {
-            trades = (await kv.get<Trade[]>('trades')) || [];
-        } else {
-            trades = readDataLocal().trades;
-        }
-        return trades.filter(t => new Date(t.timestamp) > since);
+        const data = await getData();
+        return data.trades.filter(t => new Date(t.timestamp) > since);
     },
 
     getWinRateStats: async () => {
-        let trades: Trade[] = [];
-        if (USE_KV) {
-            trades = (await kv.get<Trade[]>('trades')) || [];
-        } else {
-            trades = readDataLocal().trades;
-        }
-        const closedTrades = trades.filter(t => t.status === 'closed');
+        const data = await getData();
+        const closedTrades = data.trades.filter(t => t.status === 'closed');
         const wins = closedTrades.filter(t => (t.price * t.amount) > t.cost).length;
         return { wins, total: closedTrades.length };
     },
 
     getUniqueTradedPairsCount: async (since: Date) => {
-        let trades: Trade[] = [];
-        if (USE_KV) {
-            trades = (await kv.get<Trade[]>('trades')) || [];
-        } else {
-            trades = readDataLocal().trades;
-        }
-        const recentTrades = trades.filter(t => new Date(t.timestamp) > since);
-        const unique = new Set(recentTrades.map(t => t.symbol));
+        const data = await getData();
+        const trades = data.trades.filter(t => new Date(t.timestamp) > since);
+        const unique = new Set(trades.map(t => t.symbol));
         return unique.size;
     }
 };
