@@ -371,6 +371,7 @@ function clamp(value: number, min: number, max: number) {
 
 async function checkOpenPositions(config: StrategyConfig) {
     const openTrades = await storage.getOpenTrades();
+    const tradeUpdates: any[] = []; // Collect updates to batch save
 
     for (const trade of openTrades) {
         try {
@@ -380,52 +381,25 @@ async function checkOpenPositions(config: StrategyConfig) {
 
             let action = null;
             let reason = '';
+            let updatedTrade = { ...trade }; // Clone to track changes
+            let hasChanges = false;
 
             // 1. Update Highest Price for Trailing SL
             let highest = trade.highest_price || trade.price;
             if (currentPrice > highest) {
                 highest = currentPrice;
-                // Update trade in memory for this run. 
-                // Ideally we should persist this update to storage.
-                // Since we don't have a direct updateTrade method exposed in this context easily without refactoring storage,
-                // we will rely on the fact that if we don't sell, we continue holding.
-                // BUT for Trailing SL to work across cron runs, we MUST persist 'highest_price'.
-                // I will add a temporary hack to update it via a new storage method if possible, or just re-add the trade? No.
-                // Let's assume for now we need to add `updateTrade` to storage.ts to make this persistent.
-                // I will add `updateTrade` to storage.ts in a separate step if needed, but for now let's try to use what we have.
-                // Actually, I can use `updateTradeStatus` if I modify it, or just add a new method.
-                // For this step, I will assume I can't persist it yet and just log it, 
-                // BUT I will add a TODO to implement `storage.updateTrade` properly.
-                // Wait, I can just read the file, update, and write back using `storage` internal helpers if I was inside storage.ts.
-                // Since I am in route.ts, I need a public method.
-                // I will implement `storage.updateTrade` in the next step to ensure persistence.
-                trade.highest_price = highest;
+                updatedTrade.highest_price = highest;
+                hasChanges = true;
             }
 
             // 2. Check Trailing SL
             if (config.risk.trailingSlMultiplier) {
-                // Simplified Trailing SL based on initial risk or fixed percentage
-                // If we have an SL price, use the distance from entry to SL as 1R.
-                // Trailing SL is usually set at X * R below highest price.
-
                 const entryPrice = trade.price;
-                const slPrice = trade.sl_price || (entryPrice * 0.95); // Default 5% risk if no SL
+                const slPrice = trade.sl_price || (entryPrice * 0.95);
                 const riskAmount = entryPrice - slPrice;
-
-                // If trailingSlMultiplier is 2.0, we trail by 2 * RiskAmount
-                // But usually Trailing SL is tighter. Let's use ATR based if possible.
-                // If we don't have ATR, we use the config multiplier relative to the initial SL distance.
-                // Let's say config.risk.trailingSlMultiplier is 2.0 (meaning 2 ATR).
-                // And config.risk.slAtrMultiplier was 1.5.
-                // So the trail distance is (2.0 / 1.5) * initial_risk_distance.
 
                 const trailDistance = riskAmount * (config.risk.trailingSlMultiplier / config.risk.slAtrMultiplier);
                 const trailingSlLevel = highest - trailDistance;
-
-                // Only trigger if we are in profit significantly? 
-                // Usually Trailing SL activates after some profit.
-                // Let's say we only activate if highest > entry + riskAmount.
-                // Or just always trail. Professional bots usually always trail if enabled.
 
                 if (currentPrice < trailingSlLevel) {
                     action = 'sell';
@@ -470,17 +444,23 @@ async function checkOpenPositions(config: StrategyConfig) {
                     order_id: order.id
                 });
 
-                await storage.closeTradeById(trade.id);
+                // Mark original trade as closed in batch update
+                tradeUpdates.push({ id: trade.id, status: 'closed' });
+
                 await storage.addLog('info', `Risk Manager: ${reason} for ${trade.symbol}`, JSON.stringify({ trade, currentPrice, reason }));
             } else {
-                // If we didn't sell, and highest_price changed, we should persist it.
-                // I will call a new method `storage.updateTradeHighestPrice` which I will add next.
-                if (trade.highest_price && trade.highest_price > (trade.price || 0)) {
-                    await storage.updateTradeHighestPrice(trade.id, trade.highest_price);
+                // If not sold, but highest_price changed, queue update
+                if (hasChanges) {
+                    tradeUpdates.push({ id: trade.id, highest_price: updatedTrade.highest_price });
                 }
             }
         } catch (error: any) {
             console.error(`Error checking position for ${trade.symbol}`, error);
         }
+    }
+
+    // Batch save all updates
+    if (tradeUpdates.length > 0) {
+        await storage.updateTrades(tradeUpdates);
     }
 }

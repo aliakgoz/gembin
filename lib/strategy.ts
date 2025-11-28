@@ -64,11 +64,11 @@ export async function analyzeMarket(symbol: string, config?: StrategyConfig): Pr
         normalizeStoch(lowTf.stochK, lowTf.stochD),
     ]);
 
-    const volatilityScore = scoreVolatility(lowTf.atrPct, cfg);
+    const volatilityScore = scoreVolatility(lowTf.atrPct, trendScore, cfg);
 
     const confidence = clamp01(
-        (trendScore * 0.4) +
-        (momentumScore * 0.4) +
+        (trendScore * 0.5) + // Increased weight for trend
+        (momentumScore * 0.3) +
         (Math.max(0, 1 - Math.abs(volatilityScore)) * 0.2)
     );
 
@@ -196,9 +196,13 @@ function scoreTrend(macdHist: number) {
     return cap;
 }
 
-function scoreVolatility(atrPct: number, cfg: StrategyConfig) {
+function scoreVolatility(atrPct: number, trendScore: number, cfg: StrategyConfig) {
+    // Aggressive: If trend is very strong (> 0.7), ignore high volatility penalty
+    if (atrPct > cfg.regime.volHigh) {
+        if (Math.abs(trendScore) > 0.7) return 0; // Ignore penalty
+        return (atrPct - cfg.regime.volHigh) / cfg.regime.volHigh; // positive high means too volatile
+    }
     if (atrPct < cfg.regime.volLow) return (atrPct - cfg.regime.volLow) / cfg.regime.volLow; // negative small
-    if (atrPct > cfg.regime.volHigh) return (atrPct - cfg.regime.volHigh) / cfg.regime.volHigh; // positive high means too volatile
     return 0;
 }
 

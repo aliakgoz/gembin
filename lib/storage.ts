@@ -188,13 +188,26 @@ export const storage = {
         }
     },
 
-    updateTradeHighestPrice: async (id: string, price: number) => {
+    updateTrades: async (updates: Partial<Trade>[]) => {
+        if (updates.length === 0) return;
         const data = await getData();
-        const trade = data.trades.find(t => t.id === id);
-        if (trade) {
-            trade.highest_price = price;
-            await saveData(data);
+        let changed = false;
+
+        for (const update of updates) {
+            if (!update.id) continue;
+            const trade = data.trades.find(t => t.id === update.id);
+            if (trade) {
+                Object.assign(trade, update);
+                changed = true;
+            }
         }
+
+        if (changed) await saveData(data);
+    },
+
+    // Deprecated: Use updateTrades for batching
+    updateTradeHighestPrice: async (id: string, price: number) => {
+        await storage.updateTrades([{ id, highest_price: price }]);
     },
 
     getSettings: async (key: string): Promise<string | null> => {

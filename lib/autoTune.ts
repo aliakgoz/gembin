@@ -281,15 +281,20 @@ async function markConsult(window: "AM" | "PM" | "ADHOC") {
 async function fetchNewsDigest() {
     const url = process.env.NEWS_FEED_URL;
     if (!url) return [];
-    try {
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`news fetch failed ${res.status}`);
-        const data = await res.json();
-        return Array.isArray(data) ? data.slice(0, 10) : data.articles?.slice(0, 10) || [];
-    } catch (error) {
-        console.error("News fetch failed", error);
-        return [];
+
+    for (let i = 0; i < 3; i++) {
+        try {
+            const res = await fetch(url);
+            if (!res.ok) throw new Error(`news fetch failed ${res.status}`);
+            const data = await res.json();
+            return Array.isArray(data) ? data.slice(0, 10) : data.articles?.slice(0, 10) || [];
+        } catch (error) {
+            console.error(`News fetch attempt ${i + 1} failed`, error);
+            if (i === 2) return [];
+            await new Promise(r => setTimeout(r, 1000)); // wait 1s
+        }
     }
+    return [];
 }
 
 async function fetchEconomicCalendar() {
@@ -309,31 +314,40 @@ async function fetchEconomicCalendar() {
     Times should be in UTC.
     `;
 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        },
-        body: JSON.stringify({
-            model: "gpt-4o", // Use a smart model for this
-            temperature: 0.1,
-            response_format: { type: "json_object" },
-            messages: [{ role: "user", content: prompt }],
-        }),
-    });
+    for (let i = 0; i < 3; i++) {
+        try {
+            const response = await fetch("https://api.openai.com/v1/chat/completions", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+                },
+                body: JSON.stringify({
+                    model: "gpt-4o",
+                    temperature: 0.1,
+                    response_format: { type: "json_object" },
+                    messages: [{ role: "user", content: prompt }],
+                }),
+            });
 
-    if (!response.ok) throw new Error("Calendar fetch failed");
+            if (!response.ok) throw new Error("Calendar fetch failed");
 
-    const completion = await response.json();
-    const content = completion.choices?.[0]?.message?.content;
-    const parsed = content ? JSON.parse(content) : null;
+            const completion = await response.json();
+            const content = completion.choices?.[0]?.message?.content;
+            const parsed = content ? JSON.parse(content) : null;
 
-    if (parsed && Array.isArray(parsed.events || parsed)) {
-        const events = Array.isArray(parsed.events) ? parsed.events : parsed;
-        await storage.setSettings('economic_calendar', JSON.stringify(events));
-        await storage.setSettings('last_calendar_update', new Date().toISOString());
-        await storage.addLog('info', 'Economic Calendar Updated', JSON.stringify(events));
+            if (parsed && Array.isArray(parsed.events || parsed)) {
+                const events = Array.isArray(parsed.events) ? parsed.events : parsed;
+                await storage.setSettings('economic_calendar', JSON.stringify(events));
+                await storage.setSettings('last_calendar_update', new Date().toISOString());
+                await storage.addLog('info', 'Economic Calendar Updated', JSON.stringify(events));
+                return; // Success
+            }
+        } catch (e) {
+            console.error(`Calendar fetch attempt ${i + 1} failed`, e);
+            if (i === 2) throw e;
+            await new Promise(r => setTimeout(r, 2000));
+        }
     }
 }
 

@@ -16,6 +16,12 @@ if (process.env.BINANCE_USE_TESTNET === '1') {
 
 export const binance = binanceClient;
 
+export type Balance = {
+    free: { [key: string]: string };
+    locked: { [key: string]: string };
+    total: { [key: string]: string };
+};
+
 export async function getBalance() {
     const balance = await binance.fetchBalance();
     return balance;
@@ -40,7 +46,6 @@ export async function calculateTotalBalanceUsdt(balance: any) {
     }
 
     // 2. Fetch all tickers to get current prices
-    // Note: fetching all tickers is often more efficient than fetching one by one if we have many assets
     let tickers: any = {};
     try {
         tickers = await binance.fetchTickers();
@@ -64,17 +69,12 @@ export async function calculateTotalBalanceUsdt(balance: any) {
                 price = ticker.last || 0;
                 usdtValue = amount * price;
             } else {
-                // Fallback: try to fetch individual ticker if not found in bulk (e.g. if symbol format differs)
-                // or maybe it's a stablecoin like USDC/USDT
+                // Fallback: try to fetch individual ticker if not found in bulk
                 try {
-                    // Try direct pair
                     const t = await binance.fetchTicker(symbol);
                     price = t.last || 0;
                     usdtValue = amount * price;
                 } catch (e) {
-                    // Try reverse pair (e.g. USDT/DAI - unlikely for Binance but good practice)
-                    // Or maybe it's not paired with USDT directly (e.g. BTC paired)
-                    // For simplicity, we skip complex cross-rate calculations for now unless critical.
                     console.warn(`Could not find price for ${asset}`);
                 }
             }
