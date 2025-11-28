@@ -10,6 +10,7 @@ type AutoTuneResult = {
     aiSuggestion?: any;
     window?: "AM" | "PM" | "ADHOC";
     consulted?: boolean;
+    calendarUpdated?: boolean;
 };
 
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
@@ -45,6 +46,20 @@ export async function autoTuneStrategy(window: "AM" | "PM" | "ADHOC" = "ADHOC"):
 
     // Optional external news fetch (best-effort)
     const news = await fetchNewsDigest();
+
+    // Macro Awareness: Check if we need to update Economic Calendar
+    let calendarUpdated = false;
+    const lastCalendarUpdate = await storage.getSettings('last_calendar_update');
+    const shouldUpdateCalendar = !lastCalendarUpdate || (Date.now() - new Date(lastCalendarUpdate).getTime() > 24 * 60 * 60 * 1000);
+
+    if (shouldUpdateCalendar) {
+        try {
+            await fetchEconomicCalendar();
+            calendarUpdated = true;
+        } catch (e) {
+            console.error("Failed to update economic calendar", e);
+        }
+    }
 
     const payload = {
         config: currentConfig,
@@ -165,6 +180,7 @@ export async function autoTuneStrategy(window: "AM" | "PM" | "ADHOC" = "ADHOC"):
             message: "Strategy parameters updated from AI suggestion",
             config: saved,
             aiSuggestion: parsed,
+            calendarUpdated,
         };
     } catch (error: any) {
         await storage.addLog("error", "Auto-tune failed", JSON.stringify({ error: error.message, window }));
@@ -273,6 +289,51 @@ async function fetchNewsDigest() {
     } catch (error) {
         console.error("News fetch failed", error);
         return [];
+    }
+}
+
+async function fetchEconomicCalendar() {
+    if (!process.env.OPENAI_API_KEY) return;
+
+    const today = new Date().toISOString().split('T')[0];
+    const prompt = `
+    You are a financial analyst.
+    Identify CRITICAL high-impact economic events for the next 7 days starting from ${today}.
+    Focus on: FOMC Meetings, CPI Releases, NFP (Non-Farm Payrolls), Fed Chair Speeches.
+    Ignore minor events.
+    
+    Respond ONLY with a JSON array of objects:
+    [
+        { "date": "YYYY-MM-DD HH:MM", "event": "Event Name", "impact": "HIGH" }
+    ]
+    Times should be in UTC.
+    `;
+
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        },
+        body: JSON.stringify({
+            model: "gpt-4o", // Use a smart model for this
+            temperature: 0.1,
+            response_format: { type: "json_object" },
+            messages: [{ role: "user", content: prompt }],
+        }),
+    });
+
+    if (!response.ok) throw new Error("Calendar fetch failed");
+
+    const completion = await response.json();
+    const content = completion.choices?.[0]?.message?.content;
+    const parsed = content ? JSON.parse(content) : null;
+
+    if (parsed && Array.isArray(parsed.events || parsed)) {
+        const events = Array.isArray(parsed.events) ? parsed.events : parsed;
+        await storage.setSettings('economic_calendar', JSON.stringify(events));
+        await storage.setSettings('last_calendar_update', new Date().toISOString());
+        await storage.addLog('info', 'Economic Calendar Updated', JSON.stringify(events));
     }
 }
 

@@ -16,6 +16,7 @@ export type RiskGuardrails = {
     minTradeUsd: number;
     slAtrMultiplier: number;
     tpAtrMultiplier: number;
+    trailingSlMultiplier?: number;
 };
 
 export type IndicatorParams = {
@@ -66,6 +67,7 @@ const DEFAULT_CONFIG: StrategyConfig = {
         minTradeUsd: 12,
         slAtrMultiplier: 1.5,
         tpAtrMultiplier: 3.0,
+        trailingSlMultiplier: 2.0,
     },
     indicators: {
         rsiBuy: 45,

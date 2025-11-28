@@ -39,6 +39,15 @@ export async function GET(request: Request) {
 
             if (!isEnabled) return NextResponse.json({ message: 'Bot is disabled' });
 
+            // --- MACRO SAFETY CHECK ---
+            const safetyMode = await checkMacroSafety();
+            if (safetyMode.active) {
+                await storage.addLog('warn', `Safety Mode Active: ${safetyMode.reason}`, "Liquidating all positions.");
+                // Liquidate all positions
+                await liquidateAllPositions();
+                return NextResponse.json({ message: `Safety Mode Active: ${safetyMode.reason}. Trading suspended.` });
+            }
+
             // 1. Load Config & State
             const config = await getStrategyConfig();
             const pairs = await selectTradablePairs(config);
@@ -56,7 +65,7 @@ export async function GET(request: Request) {
                 return NextResponse.json({ message: 'Daily drawdown limit hit', dd });
             }
 
-            // 3. Safety Check: Manage Open Positions (SL/TP)
+            // 3. Safety Check: Manage Open Positions (SL/TP/Trailing SL)
             // This runs first to protect capital
             await checkOpenPositions(config);
 
@@ -212,6 +221,53 @@ export async function GET(request: Request) {
     }
 }
 
+// --- Helper Functions ---
+
+async function checkMacroSafety() {
+    const calendarStr = await storage.getSettings('economic_calendar');
+    if (!calendarStr) return { active: false };
+
+    try {
+        const events = JSON.parse(calendarStr);
+        if (!Array.isArray(events)) return { active: false };
+
+        const now = new Date();
+        const DANGER_PRE_HOURS = 4;
+        const DANGER_POST_HOURS = 2;
+
+        for (const ev of events) {
+            if (ev.impact !== 'HIGH') continue;
+            const eventTime = new Date(ev.date); // UTC
+            if (isNaN(eventTime.getTime())) continue;
+
+            const diffHours = (eventTime.getTime() - now.getTime()) / (1000 * 60 * 60);
+
+            // If we are within [T-4h, T+2h]
+            if (diffHours > -DANGER_POST_HOURS && diffHours < DANGER_PRE_HOURS) {
+                return { active: true, reason: `High Impact Event: ${ev.event} at ${ev.date}` };
+            }
+        }
+    } catch (e) {
+        console.error("Error checking macro safety", e);
+    }
+    return { active: false };
+}
+
+async function liquidateAllPositions() {
+    const openTrades = await storage.getOpenTrades();
+    for (const trade of openTrades) {
+        try {
+            const ticker = await getTicker(trade.symbol);
+            const currentPrice = ticker.last;
+            if (!currentPrice) continue;
+
+            await executeSell(trade.symbol, trade.amount, currentPrice, 'SafetyMode');
+        } catch (e) {
+            console.error(`Failed to liquidate ${trade.symbol}`, e);
+        }
+    }
+}
+
 // Helper functions for execution to keep main logic clean
 async function executeBuy(symbol: string, amount: number, price: number, sl: number | undefined, tp: number | undefined, strategy: string) {
     const binanceOrder = await binance.createMarketBuyOrder(symbol, amount);
@@ -325,20 +381,72 @@ async function checkOpenPositions(config: StrategyConfig) {
             let action = null;
             let reason = '';
 
-            // Check SL
-            if (trade.sl_price && currentPrice <= Number(trade.sl_price)) {
-                action = 'sell';
-                reason = 'Stop Loss Hit';
+            // 1. Update Highest Price for Trailing SL
+            let highest = trade.highest_price || trade.price;
+            if (currentPrice > highest) {
+                highest = currentPrice;
+                // Update trade in memory for this run. 
+                // Ideally we should persist this update to storage.
+                // Since we don't have a direct updateTrade method exposed in this context easily without refactoring storage,
+                // we will rely on the fact that if we don't sell, we continue holding.
+                // BUT for Trailing SL to work across cron runs, we MUST persist 'highest_price'.
+                // I will add a temporary hack to update it via a new storage method if possible, or just re-add the trade? No.
+                // Let's assume for now we need to add `updateTrade` to storage.ts to make this persistent.
+                // I will add `updateTrade` to storage.ts in a separate step if needed, but for now let's try to use what we have.
+                // Actually, I can use `updateTradeStatus` if I modify it, or just add a new method.
+                // For this step, I will assume I can't persist it yet and just log it, 
+                // BUT I will add a TODO to implement `storage.updateTrade` properly.
+                // Wait, I can just read the file, update, and write back using `storage` internal helpers if I was inside storage.ts.
+                // Since I am in route.ts, I need a public method.
+                // I will implement `storage.updateTrade` in the next step to ensure persistence.
+                trade.highest_price = highest;
             }
-            // Check TP
-            else if (trade.tp_price && currentPrice >= Number(trade.tp_price)) {
-                action = 'sell';
-                reason = 'Take Profit Hit';
+
+            // 2. Check Trailing SL
+            if (config.risk.trailingSlMultiplier) {
+                // Simplified Trailing SL based on initial risk or fixed percentage
+                // If we have an SL price, use the distance from entry to SL as 1R.
+                // Trailing SL is usually set at X * R below highest price.
+
+                const entryPrice = trade.price;
+                const slPrice = trade.sl_price || (entryPrice * 0.95); // Default 5% risk if no SL
+                const riskAmount = entryPrice - slPrice;
+
+                // If trailingSlMultiplier is 2.0, we trail by 2 * RiskAmount
+                // But usually Trailing SL is tighter. Let's use ATR based if possible.
+                // If we don't have ATR, we use the config multiplier relative to the initial SL distance.
+                // Let's say config.risk.trailingSlMultiplier is 2.0 (meaning 2 ATR).
+                // And config.risk.slAtrMultiplier was 1.5.
+                // So the trail distance is (2.0 / 1.5) * initial_risk_distance.
+
+                const trailDistance = riskAmount * (config.risk.trailingSlMultiplier / config.risk.slAtrMultiplier);
+                const trailingSlLevel = highest - trailDistance;
+
+                // Only trigger if we are in profit significantly? 
+                // Usually Trailing SL activates after some profit.
+                // Let's say we only activate if highest > entry + riskAmount.
+                // Or just always trail. Professional bots usually always trail if enabled.
+
+                if (currentPrice < trailingSlLevel) {
+                    action = 'sell';
+                    reason = `Trailing SL Hit (High: ${highest.toFixed(4)}, Trail: ${trailingSlLevel.toFixed(4)})`;
+                }
+            }
+
+            // 3. Check Fixed SL/TP
+            if (!action) {
+                if (trade.sl_price && currentPrice <= Number(trade.sl_price)) {
+                    action = 'sell';
+                    reason = 'Stop Loss Hit';
+                }
+                else if (trade.tp_price && currentPrice >= Number(trade.tp_price)) {
+                    action = 'sell';
+                    reason = 'Take Profit Hit';
+                }
             }
 
             if (action === 'sell') {
                 const amount = Number(trade.amount);
-                // Execute Sell
                 const binanceOrder = await binance.createMarketSellOrder(trade.symbol, amount);
 
                 const order = {
@@ -362,10 +470,14 @@ async function checkOpenPositions(config: StrategyConfig) {
                     order_id: order.id
                 });
 
-                // Close the original trade
                 await storage.closeTradeById(trade.id);
-
                 await storage.addLog('info', `Risk Manager: ${reason} for ${trade.symbol}`, JSON.stringify({ trade, currentPrice, reason }));
+            } else {
+                // If we didn't sell, and highest_price changed, we should persist it.
+                // I will call a new method `storage.updateTradeHighestPrice` which I will add next.
+                if (trade.highest_price && trade.highest_price > (trade.price || 0)) {
+                    await storage.updateTradeHighestPrice(trade.id, trade.highest_price);
+                }
             }
         } catch (error: any) {
             console.error(`Error checking position for ${trade.symbol}`, error);

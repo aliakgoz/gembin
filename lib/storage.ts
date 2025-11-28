@@ -21,13 +21,21 @@ export type Trade = {
     order_id?: string;
     sl_price?: number;
     tp_price?: number;
+    highest_price?: number; // For Trailing SL
     timestamp: string;
 };
 
 export type Settings = {
     expected_status?: 'running' | 'stopped';
     last_heartbeat?: string;
+    economic_calendar?: string; // JSON string of EconomicEvent[]
     [key: string]: string | undefined;
+};
+
+export type EconomicEvent = {
+    date: string;
+    event: string;
+    impact: 'HIGH' | 'MEDIUM' | 'LOW';
 };
 
 export type Snapshot = {
@@ -176,6 +184,15 @@ export const storage = {
         const trade = data.trades.find(t => t.id === id);
         if (trade) {
             trade.status = 'closed';
+            await saveData(data);
+        }
+    },
+
+    updateTradeHighestPrice: async (id: string, price: number) => {
+        const data = await getData();
+        const trade = data.trades.find(t => t.id === id);
+        if (trade) {
+            trade.highest_price = price;
             await saveData(data);
         }
     },
