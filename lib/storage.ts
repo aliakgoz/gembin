@@ -96,6 +96,22 @@ async function readDataBlob(): Promise<StorageData> {
         return { trades: [], settings: {}, portfolio_snapshots: [], logs: [] };
     }
 }
+
+async function writeDataBlob(data: StorageData) {
+    try {
+        // Overwrite the file. addRandomSuffix: false ensures we keep the same filename.
+        await put(BLOB_FILENAME, JSON.stringify(data), {
+            access: 'public',
+            addRandomSuffix: false,
+            token: process.env.BLOB_READ_WRITE_TOKEN,
+            // @ts-ignore
+            allowOverwrite: true
+        });
+    } catch (error) {
+        console.error("Failed to write to Blob:", error);
+    }
+}
+
 // --- Unified Storage Interface ---
 
 // Helper to get data from the correct source
