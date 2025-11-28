@@ -24,7 +24,7 @@ async function getDashboardData() {
         liveBalance = totalUsdt;
 
         // 2. Save snapshot to DB
-        storage.addSnapshot({
+        await storage.addSnapshot({
             total_balance_usdt: totalUsdt,
             positions: JSON.stringify(balance)
         });
@@ -36,32 +36,32 @@ async function getDashboardData() {
     }
 
     // 3. Fetch history and other data from DB
-    const latestSnapshot = storage.getLatestSnapshot() || { total_balance_usdt: 0 };
+    const latestSnapshot = (await storage.getLatestSnapshot()) || { total_balance_usdt: 0 };
 
-    const history = storage.getSnapshotsSince(new Date(Date.now() - 24 * 60 * 60 * 1000));
+    const history = await storage.getSnapshotsSince(new Date(Date.now() - 24 * 60 * 60 * 1000));
 
-    const recentTrades = storage.getTrades(5);
+    const recentTrades = await storage.getTrades(5);
 
     // Calculate 24h stats
-    const trades24hList = storage.getTradesSince(new Date(Date.now() - 24 * 60 * 60 * 1000));
+    const trades24hList = await storage.getTradesSince(new Date(Date.now() - 24 * 60 * 60 * 1000));
     const trades24h = trades24hList.length;
 
     // Calculate Win Rate (all time)
-    const { wins, total: totalClosed } = storage.getWinRateStats();
+    const { wins, total: totalClosed } = await storage.getWinRateStats();
     const winRate = totalClosed > 0 ? Math.round((wins / totalClosed) * 100) : 0;
 
     const strategyConfig = await getStrategyConfig();
 
-    const tradedPairCount = storage.getUniqueTradedPairsCount(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
+    const tradedPairCount = await storage.getUniqueTradedPairsCount(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
     const tradablePairs = await selectTradablePairs(strategyConfig);
     const activePairs = tradedPairCount > 0 ? tradedPairCount : tradablePairs.length;
 
-    const botEnabled = storage.getSettings('bot_enabled') === 'true';
+    const botEnabled = (await storage.getSettings('bot_enabled')) === 'true';
 
-    const lastConsultAm = storage.getSettings('last_gpt_consult_am');
-    const lastConsultPm = storage.getSettings('last_gpt_consult_pm');
+    const lastConsultAm = await storage.getSettings('last_gpt_consult_am');
+    const lastConsultPm = await storage.getSettings('last_gpt_consult_pm');
 
-    const todaySnapshots = storage.getSnapshotsSince(new Date(new Date().setHours(0, 0, 0, 0)));
+    const todaySnapshots = await storage.getSnapshotsSince(new Date(new Date().setHours(0, 0, 0, 0)));
     const dailyDrawdown = computeDailyDrawdown(todaySnapshots);
 
     return {

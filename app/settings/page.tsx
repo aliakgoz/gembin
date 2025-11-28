@@ -6,15 +6,15 @@ export const dynamic = 'force-dynamic';
 
 async function toggleBot() {
     'use server';
-    const current = storage.getSettings('bot_enabled') === 'true';
+    const current = (await storage.getSettings('bot_enabled')) === 'true';
     const newValue = (!current).toString();
 
-    storage.setSettings('bot_enabled', newValue);
+    await storage.setSettings('bot_enabled', newValue);
     revalidatePath('/settings');
 }
 
 export default async function SettingsPage() {
-    const isEnabled = storage.getSettings('bot_enabled') === 'true';
+    const isEnabled = (await storage.getSettings('bot_enabled')) === 'true';
 
     return (
         <div className="flex-1 space-y-4 p-8 pt-6">

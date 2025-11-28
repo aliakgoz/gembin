@@ -17,7 +17,7 @@ export async function GET(request: Request) {
 
     try {
         // 1. Check if Bot is Enabled
-        const isEnabled = storage.getSettings('bot_enabled') === 'true';
+        const isEnabled = (await storage.getSettings('bot_enabled')) === 'true';
 
         if (!isEnabled) {
             console.log('Bot is disabled');
@@ -37,7 +37,7 @@ export async function GET(request: Request) {
         const ddLimit = config.risk.maxDailyDrawdown;
         const dd = await computeDailyDrawdown();
         if (dd !== null && dd <= -ddLimit) {
-            storage.addLog('warn', 'Daily drawdown limit hit, skipping trades', JSON.stringify({ dd, limit: ddLimit }));
+            await storage.addLog('warn', 'Daily drawdown limit hit, skipping trades', JSON.stringify({ dd, limit: ddLimit }));
             return NextResponse.json({ message: 'Daily drawdown limit hit, trades paused', dd, limit: ddLimit }, { status: 200 });
         }
 
@@ -66,7 +66,7 @@ export async function GET(request: Request) {
                         // For safety, we'll just log it as a "Paper Trade" for now until verified
                         const order = { id: 'paper_' + Date.now(), symbol, side: 'buy', amount, price: analysis.price, cost: tradeAmountUSDT, status: 'open' };
 
-                        storage.addTrade({
+                        await storage.addTrade({
                             symbol,
                             side: 'buy',
                             amount,
@@ -94,7 +94,7 @@ export async function GET(request: Request) {
                         // const order = await binance.createMarketSellOrder(symbol, assetBalance);
                         const order = { id: 'paper_' + Date.now(), symbol, side: 'sell', amount: assetBalance, price: analysis.price, cost: assetBalance * analysis.price, status: 'closed' };
 
-                        storage.addTrade({
+                        await storage.addTrade({
                             symbol,
                             side: 'sell',
                             amount: assetBalance,
@@ -105,7 +105,7 @@ export async function GET(request: Request) {
                             order_id: order.id
                         });
                         // Close any open buy trades for this symbol
-                        storage.updateTradeStatus(symbol, 'closed');
+                        await storage.updateTradeStatus(symbol, 'closed');
 
                         results.push({ symbol, action: 'SELL', order, analysis });
                     }
@@ -115,7 +115,7 @@ export async function GET(request: Request) {
 
             } catch (e: any) {
                 console.error(`Error processing ${symbol}:`, e);
-                storage.addLog('error', `Error processing ${symbol}`, JSON.stringify({ error: e.message }));
+                await storage.addLog('error', `Error processing ${symbol}`, JSON.stringify({ error: e.message }));
             }
         }
 
@@ -123,7 +123,7 @@ export async function GET(request: Request) {
         const totalBalance = await getBalance();
         const { totalUsdt, assets } = await calculateTotalBalanceUsdt(totalBalance);
 
-        storage.addSnapshot({
+        await storage.addSnapshot({
             total_balance_usdt: totalUsdt,
             positions: JSON.stringify(assets)
         });
@@ -141,7 +141,7 @@ export async function GET(request: Request) {
 }
 
 async function computeDailyDrawdown(): Promise<number | null> {
-    const snapshots = storage.getSnapshotsSince(new Date(new Date().setHours(0, 0, 0, 0)));
+    const snapshots = await storage.getSnapshotsSince(new Date(new Date().setHours(0, 0, 0, 0)));
     if (!snapshots.length) return null;
     const balances = snapshots.map((r: any) => Number(r.total_balance_usdt));
     const start = balances[0];
@@ -160,8 +160,8 @@ async function pickAdvisoryWindow(): Promise<"AM" | "PM" | "ADHOC"> {
     const utc3Hour = (now.getUTCHours() + 3) % 24;
     const windowNow = utc3Hour >= 9 && utc3Hour <= 12 ? "AM" : utc3Hour >= 17 && utc3Hour <= 20 ? "PM" : null;
 
-    const lastAm = storage.getSettings('last_gpt_consult_am');
-    const lastPm = storage.getSettings('last_gpt_consult_pm');
+    const lastAm = await storage.getSettings('last_gpt_consult_am');
+    const lastPm = await storage.getSettings('last_gpt_consult_pm');
     const amDone = isSameDay(lastAm);
     const pmDone = isSameDay(lastPm);
 
@@ -187,7 +187,7 @@ function clamp(value: number, min: number, max: number) {
 }
 
 async function checkOpenPositions(config: StrategyConfig) {
-    const openTrades = storage.getOpenTrades();
+    const openTrades = await storage.getOpenTrades();
 
     for (const trade of openTrades) {
         try {
@@ -215,7 +215,7 @@ async function checkOpenPositions(config: StrategyConfig) {
                 // await binance.createMarketSellOrder(trade.symbol, amount);
                 const order = { id: 'paper_sl_tp_' + Date.now(), symbol: trade.symbol, side: 'sell', amount, price: currentPrice, cost: amount * currentPrice, status: 'closed' };
 
-                storage.addTrade({
+                await storage.addTrade({
                     symbol: trade.symbol,
                     side: 'sell',
                     amount,
@@ -227,9 +227,9 @@ async function checkOpenPositions(config: StrategyConfig) {
                 });
 
                 // Close the original trade
-                storage.closeTradeById(trade.id);
+                await storage.closeTradeById(trade.id);
 
-                storage.addLog('info', `Risk Manager: ${reason} for ${trade.symbol}`, JSON.stringify({ trade, currentPrice, reason }));
+                await storage.addLog('info', `Risk Manager: ${reason} for ${trade.symbol}`, JSON.stringify({ trade, currentPrice, reason }));
             }
         } catch (error: any) {
             console.error(`Error checking position for ${trade.symbol}`, error);

@@ -12,7 +12,7 @@ import { format } from "date-fns";
 export const dynamic = 'force-dynamic';
 
 export default async function TradesPage() {
-    const trades = storage.getTrades(100);
+    const trades = await storage.getTrades(100);
 
     return (
         <div className="flex-1 space-y-4 p-8 pt-6">

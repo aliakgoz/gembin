@@ -156,7 +156,7 @@ export async function autoTuneStrategy(window: "AM" | "PM" | "ADHOC" = "ADHOC"):
 
         await markConsult(window);
 
-        storage.addLog("info", "Strategy auto-tuned", JSON.stringify({ suggestion: parsed, saved, window }));
+        await storage.addLog("info", "Strategy auto-tuned", JSON.stringify({ suggestion: parsed, saved, window }));
 
         return {
             updated: true,
@@ -167,7 +167,7 @@ export async function autoTuneStrategy(window: "AM" | "PM" | "ADHOC" = "ADHOC"):
             aiSuggestion: parsed,
         };
     } catch (error: any) {
-        storage.addLog("error", "Auto-tune failed", JSON.stringify({ error: error.message, window }));
+        await storage.addLog("error", "Auto-tune failed", JSON.stringify({ error: error.message, window }));
         return {
             updated: false,
             consulted: false,
@@ -177,6 +177,7 @@ export async function autoTuneStrategy(window: "AM" | "PM" | "ADHOC" = "ADHOC"):
         };
     }
 }
+
 
 function computeBalanceStats(rows: any[]) {
     if (!rows.length) return { balanceChangePct: null, maxDrawdown: null, sharpeLike: null };

@@ -155,14 +155,14 @@ function clampInt(value: any, min: number, max: number) {
 }
 
 export async function getStrategyConfig(): Promise<StrategyConfig> {
-    const value = storage.getSettings('strategy_config');
+    const value = await storage.getSettings('strategy_config');
     const raw = value ? safeParse(value) : null;
     return mergeConfig(raw);
 }
 
 export async function saveStrategyConfig(config: StrategyConfig) {
     const merged = mergeConfig(config);
-    storage.setSettings('strategy_config', JSON.stringify(merged));
+    await storage.setSettings('strategy_config', JSON.stringify(merged));
     return merged;
 }
 
