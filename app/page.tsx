@@ -110,7 +110,13 @@ export default async function DashboardPage() {
     return (
         <div className="flex-1 space-y-4 p-8 pt-6">
             <div className="flex items-center justify-between space-y-2">
-                <h2 className="text-3xl font-bold tracking-tight">Dashboard</h2>
+                <div className="flex items-center space-x-4">
+                    <h2 className="text-3xl font-bold tracking-tight">Dashboard</h2>
+                    <div className={`flex items-center px-3 py-1 rounded-full text-sm font-medium ${botEnabled ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                        <div className={`h-2 w-2 rounded-full mr-2 ${botEnabled ? 'bg-green-500' : 'bg-red-500'}`} />
+                        {botEnabled ? 'Bot Running' : 'Bot Stopped'}
+                    </div>
+                </div>
                 <div className="flex items-center space-x-2">
                     {connectionStatus === 'connected' ? (
                         <span className="flex items-center text-sm text-green-500 bg-green-100 px-2 py-1 rounded-full">
