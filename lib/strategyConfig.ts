@@ -65,8 +65,8 @@ const DEFAULT_CONFIG: StrategyConfig = {
         maxOpenPositions: 3,
         maxPairs: 10,
         minTradeUsd: 12,
-        slAtrMultiplier: 1.5,
-        tpAtrMultiplier: 3.0,
+        slAtrMultiplier: 2.0, // Increased from 1.5 for breathing room
+        tpAtrMultiplier: 4.0, // Increased from 3.0 to target larger moves
         trailingSlMultiplier: 2.0,
     },
     indicators: {
@@ -84,7 +84,7 @@ const DEFAULT_CONFIG: StrategyConfig = {
         volLow: 0.01,
         volHigh: 0.05,
         trendThresh: 0.3,
-        confidenceFloor: 0.2,
+        confidenceFloor: 0.4, // Increased from 0.2 to reduce noise
     },
 };
 
