@@ -87,24 +87,31 @@ function writeDataLocal(data: StorageData) {
 // --- Blob Helper Functions ---
 
 async function readDataBlob(): Promise<StorageData> {
-    try {
-        // 1. List blobs to find our file
-        const { blobs } = await list({ prefix: BLOB_FILENAME, limit: 1 });
-        const blob = blobs.find(b => b.pathname === BLOB_FILENAME);
+    let lastError;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+            // 1. List blobs to find our file
+            const { blobs } = await list({ prefix: BLOB_FILENAME, limit: 1 });
+            const blob = blobs.find(b => b.pathname === BLOB_FILENAME);
 
-        if (!blob) {
-            return { trades: [], settings: {}, portfolio_snapshots: [], logs: [] };
+            if (!blob) {
+                return { trades: [], settings: {}, portfolio_snapshots: [], logs: [] };
+            }
+
+            // 2. Fetch the content
+            const response = await fetch(blob.url);
+            if (!response.ok) throw new Error(`Failed to fetch blob: ${response.statusText}`);
+            return await response.json();
+
+        } catch (error) {
+            console.warn(`Attempt ${attempt} failed to read Blob:`, error);
+            lastError = error;
+            if (attempt < 3) await new Promise(res => setTimeout(res, 1000 * attempt)); // Backoff
         }
-
-        // 2. Fetch the content
-        const response = await fetch(blob.url);
-        if (!response.ok) throw new Error('Failed to fetch blob');
-        return await response.json();
-
-    } catch (error) {
-        console.error("Failed to read from Blob:", error);
-        return { trades: [], settings: {}, portfolio_snapshots: [], logs: [] };
     }
+
+    console.error("All attempts to read Blob failed.");
+    throw lastError;
 }
 
 async function writeDataBlob(data: StorageData) {
